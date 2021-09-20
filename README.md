@@ -3,8 +3,8 @@ We developed the codes here to estimate heterogeneous treatment effects using st
 
 This repository contains the following folders: 
 - Data: 
--- SPRINT data 
--- ACCORD data 
+  - SPRINT data 
+  - ACCORD data 
 - Models: Deriving prediction models for risk and HTE estimation
            1) We use a specturm of statistical learning methods including GBM, RSF, BART, Deepsurv
            2) We conduct internal validation using SPRINT data for both the CVD and SAE outcomes
