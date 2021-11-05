@@ -36,8 +36,25 @@ rgrf = function(x, w, y, D,
                 p_hat = NULL,
                 m_hat = NULL,
                 c_hat = NULL,      # censoring weight 
+                failure.times = NULL, 
                 num.trees = 2000,
-                nthread = NULL,
+                sample.weights = NULL,
+                clusters = NULL,
+                equalize.cluster.weights = FALSE,
+                sample.fraction = 0.5,
+                mtry = min(ceiling(sqrt(ncol(x)) + 20), ncol(x)),
+                min.node.size = 5,
+                honesty = TRUE,
+                honesty.fraction = 0.5,
+                honesty.prune.leaves = TRUE,
+                alpha = 0.05,
+                imbalance.penalty = 0,
+                stabilize.splits = TRUE,
+                ci.group.size = 2,
+                tune.parameters = "none",
+                compute.oob.predictions = TRUE,
+                num.threads = NULL,
+                seed = runif(1, 0, .Machine$integer.max),
                 verbose = FALSE){
 
 
@@ -52,49 +69,97 @@ rgrf = function(x, w, y, D,
   if (is.null(k_folds)) {
     k_folds = floor(max(3, min(10,length(y)/4)))
   }
-
-  tempdat <- data.frame(y, D, w, x)
   
   if (is.null(p_hat)){
-    w_fit <- regression_forest(x, w, tune.parameters = "all") 
-    p_hat <- w_fit$predictions
-  }else{
+    w_fit <- regression_forest(x, w, num.trees = max(50, num.trees / 4),
+                               sample.weights = sample.weights, clusters = clusters,
+                               equalize.cluster.weights = equalize.cluster.weights,
+                               sample.fraction = sample.fraction, mtry = mtry,
+                               min.node.size = 5, honesty = TRUE,
+                               honesty.fraction = 0.5, honesty.prune.leaves = TRUE,
+                               alpha = alpha, imbalance.penalty = imbalance.penalty,
+                               ci.group.size = 1, compute.oob.predictions = TRUE,
+                               num.threads = num.threads, seed = seed) 
+    p_hat <- predict(w_fit)$predictions
+  }else if (length(p_hat) == 1) {
     w_fit = NULL
+    p_hat <- rep(p_hat, nrow(x))
+  }else if (length(p_hat) != nrow(x)){
+    stop("p_hat has incorrect length.")
   }
   
+  args.nuisance <- list(failure.times = failure.times,
+                        num.trees = max(50, num.trees / 4),
+                        sample.weights = sample.weights,
+                        clusters = clusters,
+                        equalize.cluster.weights = equalize.cluster.weights,
+                        sample.fraction = sample.fraction,
+                        mtry = mtry,
+                        min.node.size = 15,
+                        honesty = TRUE,
+                        honesty.fraction = 0.5,
+                        honesty.prune.leaves = TRUE,
+                        alpha = alpha,
+                        prediction.type = "Nelson-Aalen",
+                        compute.oob.predictions = FALSE,
+                        num.threads = num.threads,
+                        seed = seed)
+  
   if (is.null(m_hat)){
-    y_fit <- survival_forest(as.matrix(tempdat[, 3:dim(tempdat)[2]]),
-                             tempdat$y, 
-                             tempdat$D)
-    tempdat1 <- tempdat; tempdat1$w <- 1
-    tempdat0 <- tempdat; tempdat0$w <- 0
-    surf1 <- predict(y_fit, as.matrix(tempdat1[,3:dim(tempdat1)[2]]))$predictions[, which.min(abs(y_fit$failure.times-times))]
-    surf0 <- predict(y_fit, as.matrix(tempdat0[,3:dim(tempdat0)[2]]))$predictions[, which.min(abs(y_fit$failure.times-times))]
+    y_fit <- do.call(survival_forest, c(list(X = cbind(x, w), Y = y, D = D), args.nuisance))
+    y_fit[["X.orig"]][, ncol(x) + 1] <- rep(1, nrow(x))
+    S1.hat <- predict(y_fit)$predictions
+    y_fit[["X.orig"]][, ncol(x) + 1] <- rep(0, nrow(x))
+    S0.hat <- predict(y_fit)$predictions
+    y_fit[["X.orig"]][, ncol(x) + 1] <- w
+    
+    times.index <- findInterval(times, y_fit$failure.times)
+    surf1 <- S1.hat[, times.index]
+    surf0 <- S0.hat[, times.index]
     m_hat  <- p_hat * surf1 + (1 - p_hat) * surf0 
   }else {
     y_fit = NULL
   }
+  
+  if (is.null(failure.times)) {
+    Y.grid <- sort(unique(y))
+  } else {
+    Y.grid <- failure.times
+  }
 
+  args.nuisance$compute.oob.predictions <- TRUE
   if (is.null(c_hat)){
-    c_fit <- survival_forest(cbind(w,x),
-                             y, 
-                             1 - D,
-                             prediction.type = "Nelson-Aalen")
-    C.hat <- c_fit$predictions
+    c_fit <- do.call(survival_forest, c(list(X = cbind(x, w), Y = y, D = 1 - D), args.nuisance))
+    C.hat <- predict(c_fit, failure.times = Y.grid)$predictions
     cent <- y
     cent[D==0] <- times
     C.index <- rep(NA, length(cent))
     for (h in 1:length(cent)){
-      C.index[h] <- which.min(abs(sort(unique(y[D==0])) - cent[h]))
+      C.index[h] <- which.min(abs(Y.grid - cent[h]))
     }
     c_hat <- C.hat[cbind(1:length(y), C.index)]
+    c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   }else{
     c_fit <- NULL
   }
+  
+  if (any(c_hat <= 0.05)) {
+    warning(paste("Estimated censoring probabilites go as low as:", min(c_hat),
+                  "- an identifying assumption is that there exists a fixed positive constant M",
+                  "such that the probability of observing an event time past the maximum follow-up time Y.max",
+                  "is at least M. Formally, we assume: P(Y >= Y.max | X) > M.",
+                  "This warning appears when M is less than 0.05, at which point causal survival forest",
+                  "can not be expected to deliver reliable estimates."))
+  } else if (any(c_hat < 0.2 & c_hat > 0.05)) {
+    warning(paste("Estimated censoring probabilites are lower than 0.2.",
+                  "An identifying assumption is that there exists a fixed positive constant M",
+                  "such that the probability of observing an event time past the maximum follow-up time Y.max",
+                  "is at least M. Formally, we assume: P(Y >= Y.max | X) > M."))
+  }
 
-  # use binary data
+  # create binary data
   tempdata <- data.frame(y, D, w, m_hat, p_hat, c_hat, x)
-  binary_data <- tempdata[tempdata$D==1|tempdata$y > times,]          # remove subjects who got censored before the time of interest t50
+  binary_data <- tempdata[tempdata$D==1|tempdata$y > times,]       # remove subjects who got censored before the time of interest t50
   binary_data$D[binary_data$D==1 & binary_data$y > times] <- 0     # recode the event status for subjects who had events after t50
   binary_data <- binary_data[complete.cases(binary_data),]
   
@@ -106,8 +171,20 @@ rgrf = function(x, w, y, D,
   tau_dat <- data.frame(pseudo_outcome, binary_data[,7:dim(binary_data)[2]])
   tau_fit <- regression_forest(tau_dat[, 2:dim(tau_dat)[2]], 
                                tau_dat$pseudo_outcome, 
-                               sample.weights = weights, 
-                               tune.parameters = "all")
+                               num.trees = num.trees,
+                               clusters = clusters,
+                               sample.fraction = sample.fraction,
+                               mtry = mtry,
+                               min.node.size = min.node.size,
+                               honesty = honesty,
+                               honesty.fraction = honesty.fraction,
+                               honesty.prune.leaves = honesty.prune.leaves,
+                               alpha = alpha,
+                               imbalance.penalty = imbalance.penalty,
+                               ci.group.size = ci.group.size,
+                               compute.oob.predictions = compute.oob.predictions,
+                               num.threads = num.threads,
+                               seed = seed)
 
   ret <- list(tau_fit = tau_fit,
               pseudo_outcome = pseudo_outcome,
