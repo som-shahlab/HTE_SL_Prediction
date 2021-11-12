@@ -39,9 +39,29 @@ slasso_surv = function(x, w, y, D, times,
   y = input$y
   D = input$D
   
-  standardization = caret::preProcess(x, method=c("center", "scale")) # get the standardization params
-  x_scl = predict(standardization, x)							 # standardize the input
+  x_int = data.frame(as.numeric(w - 0.5) * x)
+  names(x_int) = paste0(names(data.frame(x)), "_int") 
+  x_all = cbind(as.matrix(x_int), x)
+  standardization = caret::preProcess(x_all, method=c("center", "scale")) # get the standardization params
+  x_scl = predict(standardization, x_all)							 # standardize the input
   x_scl = x_scl[,!is.na(colSums(x_scl)), drop = FALSE]
+  x_scl_tilde = cbind(w - 0.5, x_scl)
+  
+  x_int1 = data.frame(0.5 * x)
+  names(x_int1) = paste0(names(data.frame(x)), "_int")
+  x_all1 = cbind(as.matrix(x_int1), x)
+  standardization = caret::preProcess(x_all1, method=c("center", "scale")) # get the standardization params
+  x_scl_1 = predict(standardization, x_all1)							 # standardize the input
+  x_scl_1 = x_scl_1[,!is.na(colSums(x_scl_1)), drop = FALSE]
+  x_scl_tilde_1 = cbind(0.5, x_scl_1)
+
+  x_int0 = data.frame(-0.5 * x)
+  names(x_int0) = paste0(names(data.frame(x)), "_int")
+  x_all0 = cbind(as.matrix(x_int0), x)
+  standardization = caret::preProcess(x_all0, method=c("center", "scale")) # get the standardization params
+  x_scl_0 = predict(standardization, x_all0)							 # standardize the input
+  x_scl_0 = x_scl_0[,!is.na(colSums(x_scl_0)), drop = FALSE]
+  x_scl_tilde_0 = cbind(-0.5, x_scl_0)
   
   lambda_choice = match.arg(lambda_choice)
   
@@ -64,15 +84,11 @@ slasso_surv = function(x, w, y, D, times,
     
   }
   
-  x_scl_tilde = cbind(as.numeric(2 * w - 1) * cbind(1, x_scl), x_scl)
-  x_scl_pred1 = cbind(1, x_scl, x_scl)
-  x_scl_pred0 = cbind(0, 0 * x_scl, x_scl)
-  
   if (is.null(penalty_factor) || (length(penalty_factor) != pobs)) {
-    if (!is.null(penalty_factor) && length(penalty_factor) != 2 * pobs + 1) {
+    if (!is.null(penalty_factor) && length(penalty_factor) != pobs + 1) {
       warning("penalty_factor supplied is not 1 plus 2 times the number of columns in x. Using all ones instead.")
     }
-    penalty_factor = c(0, rep(1, 2 * pobs))
+    penalty_factor = c(0, rep(1, pobs))
   }
 
   s_fit <- glmnet::cv.glmnet(x_scl_tilde, 
@@ -85,34 +101,30 @@ slasso_surv = function(x, w, y, D, times,
                              alpha = alpha)
 
   s_beta <- as.vector(t(coef(s_fit, s = lambda_choice)))
-  s_beta_adj <- c(2 * s_beta[1:(1 + dim(x)[2])], s_beta[(2 + dim(x)[2]):dim(x_scl_tilde)[2]])  
   
-  link1 <- exp(x_scl_pred1 %*% s_beta_adj)
-  link0 <- exp(x_scl_pred0 %*% s_beta_adj)
-  link <- exp(x_scl_tilde %*% s_beta_adj)
+  link1 <- exp(x_scl_tilde_1 %*% s_beta)
+  link0 <- exp(x_scl_tilde_0 %*% s_beta)
   
   d <- data.frame(table(y[D == 1]))[,2]  # number of events at each unique time                               
-  h0 <- rep(NA, length(sort(unique(y))))
-  for(l in 1:length(sort(unique(y)))){
-    h0[l] <- d[l] / sum(exp(x_scl_tilde[y >= sort(unique(y))[l], ] %*% s_beta))
+  h0 <- rep(NA, length(sort(unique(y[D == 1]))))
+  for(l in 1:length(sort(unique(y[D == 1])))){
+    h0[l] <- d[l] / sum(exp(x_scl_tilde[y >= sort(unique(y[D == 1]))[l], ] %*% s_beta))
   }    
   S0 <- exp(-cumsum(h0))
-  S0_t <- S0[sort(unique(y))>=times][1]
+  S0_t <- S0[sort(unique(y[D == 1]))>=times][1]
   
   surv1 <- S0_t^exp(link1)
   surv0 <- S0_t^exp(link0)
  
-  tau_hat <- as.numeric(surv1 - surv0)
+  tau_hat <- as.numeric(surv1 - surv0)  
 
   ret = list(s_fit = s_fit,
              x_org = x_scl_tilde, 
              y_org = y, 
              D_org = D,
-             beta_org = s_beta,
-             s_beta = s_beta_adj,
+             s_beta = s_beta,
              tau_hat = tau_hat,
-             lambda_choice = lambda_choice,
-             standardization = standardization)
+             lambda_choice = lambda_choice)
 
   class(ret) <- "slasso_surv"
   ret
@@ -147,21 +159,25 @@ predict.slasso_surv <- function(object,
                                 ...) {
   if (!is.null(newx)) {
     newx = sanitize_x(newx)
-    newx_scl = predict(object$standardization, newx) # standardize the new data using the same standardization as with the training data
-    newx_scl = newx_scl[,!is.na(colSums(newx_scl)), drop = FALSE]
-    newx_scl_pred1 = cbind(1, newx_scl, newx_scl)
-    newx_scl_pred0 = cbind(0, 0 * newx_scl, newx_scl)
+    x_int1 <- cbind(newx, newx)
+    x_int0 <- cbind(0 * newx, newx)
+    x_pred1 = predict(object$standardization, x_int1)
+    x_pred1 = x_pred1[,!is.na(colSums(x_pred1)), drop = FALSE]
+    x_pred0 = predict(object$standardization, x_int0)
+    x_pred0 = x_pred0[,!is.na(colSums(x_pred0)), drop = FALSE]
+    newx_scl_pred1 = cbind(1, x_pred1)
+    newx_scl_pred0 = cbind(0, x_pred0)
 
     link1 <- exp(newx_scl_pred1 %*% object$s_beta)
     link0 <- exp(newx_scl_pred0 %*% object$s_beta)
     
     d <- data.frame(table(object$y_org[object$D_org == 1]))[,2]                                
-    h0 <- rep(NA, length(sort(unique(object$y_org))))
-    for(l in 1:length(sort(unique(object$y_org)))){
-      h0[l] <- d[l] / sum(exp(object$x_org[object$y_org >= sort(unique(object$y_org))[l], ] %*% object$beta_org))
+    h0 <- rep(NA, length(sort(unique(object$y_org[object$D_org == 1]))))
+    for(l in 1:length(sort(unique(object$y_org[object$D_org == 1])))){
+      h0[l] <- d[l] / sum(exp(object$x_org[object$y_org >= sort(unique(object$y_org[object$D_org == 1]))[l], ] %*% object$s_beta))
     }    
     S0 <- exp(-cumsum(h0))
-    S0_t <- S0[sort(unique(object$y_org))>=times][1]
+    S0_t <- S0[sort(unique(object$y_org[object$D_org == 1]))>=times][1]
     
     surv1 <- S0_t^exp(link1)
     surv0 <- S0_t^exp(link0)

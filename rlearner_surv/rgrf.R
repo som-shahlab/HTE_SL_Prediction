@@ -133,11 +133,8 @@ rgrf = function(x, w, y, D,
     C.hat <- predict(c_fit, failure.times = Y.grid)$predictions
     cent <- y
     cent[D==0] <- times
-    C.index <- rep(NA, length(cent))
-    for (h in 1:length(cent)){
-      C.index[h] <- which.min(abs(Y.grid - cent[h]))
-    }
-    c_hat <- C.hat[cbind(1:length(y), C.index)]
+    cen.times.index <- findInterval(cent, Y.grid)
+    c_hat <- C.hat[cbind(1:length(y), cen.times.index)]
     c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   }else{
     c_fit <- NULL

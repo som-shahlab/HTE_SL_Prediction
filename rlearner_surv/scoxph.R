@@ -29,22 +29,22 @@ scoxph = function(x, w, y, D, times){
   y = input$y
   D = input$D
   
-  x_tilde = data.frame(as.numeric(2 * w - 1) * cbind(1, x), x)
-  x_pred1 = data.frame(1, x, x)
-  x_pred0 = data.frame(0, 0 * x, x)
+  x_tilde = data.frame(as.numeric(w - 0.5) * cbind(1, x), x)
+  x_pred1 = data.frame(0.5 * cbind(1, x), x)
+  x_pred0 = data.frame(-0.5 * cbind(1, x), x)
 
   colnames(x_tilde) <- colnames(x_pred1) <- colnames(x_pred0) <- paste0("v", 1:dim(x_tilde)[2])
   formula <- as.formula(paste0("Surv(y, D) ~ ", paste(colnames(x_tilde), sep=" ", collapse = "+")))
   tmpdat <- data.frame(y, D, x_tilde)
   
   s_fit <- coxph(formula, data = tmpdat)
-  bh_dat <- basehaz(s_fit)
-  bh <- bh_dat[which.min(abs(bh_dat$time - times)),]$hazard
-  
+  bh_dat <- basehaz(s_fit, centered = FALSE)
+  index <- findInterval(times, bh_dat$time)
+  bh <- bh_dat[index, 1]
+
   # Adjust the coefficients for treatment and interaction terms by multiply by 2
-  s_beta <- c(2 * s_fit$coefficients[1:(1 + dim(x)[2])], s_fit$coefficients[(2 + dim(x)[2]):dim(x_tilde)[2]])  
-  link1 <- exp(as.matrix(x_pred1) %*% s_beta)
-  link0 <- exp(as.matrix(x_pred0) %*% s_beta)
+  link1 <- exp(as.matrix(x_pred1) %*% s_fit$coefficients)
+  link0 <- exp(as.matrix(x_pred0) %*% s_fit$coefficients)
   
   est_S1_cvd <- exp(-bh)^link1
   est_S0_cvd <- exp(-bh)^link0
@@ -53,7 +53,7 @@ scoxph = function(x, w, y, D, times){
 
   ret = list(s_fit = s_fit,
              bh = bh,
-             s_beta = s_beta,
+             s_beta = s_fit$coefficients,
              tau_hat = tau_hat)
 
   class(ret) <- "scoxph"
@@ -90,11 +90,12 @@ predict.scoxph <- function(object,
   if (!is.null(newx)) {
     newx <- sanitize_x(newx)
     
-    bh_dat <- basehaz(object$s_fit)
-    bh <- bh_dat[which.min(abs(bh_dat$time - times)),]$hazard
+    bh_dat <- basehaz(object$s_fit, centered = FALSE)
+    index <- findInterval(times, bh_dat$time)
+    bh <- bh_dat[index, 1]
     
-    x_pred1 <- data.frame(1, newx, newx)
-    x_pred0 <- data.frame(0, 0 * newx, newx)
+    x_pred1 <- data.frame(0.5, 0.5 * newx, newx)
+    x_pred0 <- data.frame(-0.5, -0.5 * newx, newx)
     
     link1 <- exp(as.matrix(x_pred1) %*% object$s_beta)
     link0 <- exp(as.matrix(x_pred0) %*% object$s_beta)

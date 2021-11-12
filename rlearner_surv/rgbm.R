@@ -31,17 +31,17 @@
 #'
 #' @export
 rgbm = function(x, w, y, D,
-                times = NULL,
-                k_folds = NULL,
-                p_hat = NULL,
-                m_hat = NULL,
-                c_hat = NULL,      # censoring weight 
-                n.trees = NULL,
-                shrinkage = NULL,
-                cv.folds = NULL,
-                nthread = NULL,
-                cf = TRUE, 
-                verbose = FALSE){
+                   times = NULL,
+                   k_folds = NULL,
+                   p_hat = NULL,
+                   m_hat = NULL,
+                   c_hat = NULL,      # censoring weight 
+                   n.trees,
+                   shrinkage,
+                   train.frac,
+                   nthread = NULL,
+                   cf = TRUE, 
+                   verbose = FALSE){
 
 
   input = sanitize_input(x,w,y,D)
@@ -65,28 +65,27 @@ rgbm = function(x, w, y, D,
       for (k in 1:k_folds){
         testdat <- tempdat[foldid==k, ]
         traindat <- tempdat[!foldid==k, ]
-        w_dat <- traindat[, 3:dim(traindat)[2]]
-        w_fit <- gbm(w ~ ., 
-                     data = w_dat, 
-                     distribution = "bernoulli",
-                     shrinkage = shrinkage, 
-                     n.trees = n.trees,
-                     cv.folds = cv.folds) 
-        best_iter <- gbm.perf(w_fit, plot.it = F, method = 'cv')
+        w_fit <- gbm.fit(traindat[, 4:dim(traindat)[2]], 
+                         traindat$w, 
+                         distribution = "bernoulli",
+                         shrinkage = shrinkage, 
+                         n.trees = n.trees,
+                         nTrain = ceiling(dim(traindat)[1] * train.frac),
+                         verbose = FALSE) 
+        best_iter <- gbm.perf(w_fit, plot.it = F, method = 'test')
         log_odds <- predict(w_fit, testdat[, 4:dim(testdat)[2]], n.trees = best_iter)
         p_hat[foldid==k] <- 1/(1 + exp(-log_odds))
       }
     } else {
-      w_dat <- tempdat[, 3:dim(tempdat)[2]]
-      w_fit <- gbm(w ~ ., 
-                   data = w_dat, 
-                   distribution = "bernoulli",
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees,
-                   cv.folds = cv.folds, 
-                   n.cores = detectCores()) 
-      best_iter <- gbm.perf(w_fit, plot.it = F, method = 'cv')
-      log_odds <- predict(w_fit, w_dat[, 2:dim(w_dat)[2]], n.trees = best_iter)
+      w_fit <- gbm.fit(tempdat[, 4:dim(tempdat)[2]], 
+                       tempdat$w, 
+                       distribution = "bernoulli",
+                       shrinkage = shrinkage, 
+                       n.trees = n.trees,
+                       nTrain = ceiling(dim(tempdat)[1] * train.frac),
+                       verbose = FALSE)  
+      best_iter <- gbm.perf(w_fit, plot.it = F, method = 'test')
+      log_odds <- predict(w_fit, tempdat[, 4:dim(tempdat)[2]], n.trees = best_iter)
       p_hat <- 1/(1 + exp(-log_odds))
     }
   }else{
@@ -102,14 +101,14 @@ rgbm = function(x, w, y, D,
         testdat1 <- testdat; testdat1$w <- 1
         testdat0 <- testdat; testdat0$w <- 0
         
-        y_fit <- gbm(Surv(y, D)~.,
-                     data = traindat,
-                     distribution = "coxph",
-                     shrinkage = shrinkage, 
-                     n.trees = n.trees,
-                     cv.folds = cv.folds, 
-                     n.cores = detectCores()) 
-        best_iter <- gbm.perf(y_fit, plot.it = F, method = 'cv')
+        y_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                         Surv(traindat$y, traindat$D),
+                         distribution = "coxph",
+                         shrinkage = shrinkage, 
+                         n.trees = n.trees,
+                         nTrain = ceiling(dim(traindat)[1] * train.frac),
+                         verbose = FALSE) 
+        best_iter <- gbm.perf(y_fit, plot.it = F, method = 'test')
         pred.train <- predict(y_fit, traindat, n.trees = best_iter)
         basehaz.cum <- basehaz.gbm(traindat$y, traindat$D, pred.train, t.eval = times, cumulative = TRUE)
         
@@ -125,14 +124,14 @@ rgbm = function(x, w, y, D,
       testdat1 <- testdat; testdat1$w <- 1
       testdat0 <- testdat; testdat0$w <- 0
       
-      y_fit <- gbm(Surv(y, D)~.,
-                   data = traindat,
-                   distribution = "coxph",
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees,
-                   cv.folds = cv.folds, 
-                   n.cores = detectCores()) 
-      best_iter <- gbm.perf(y_fit, plot.it = F, method = 'cv')
+      y_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                       Surv(traindat$y, traindat$D),
+                       distribution = "coxph",
+                       shrinkage = shrinkage, 
+                       n.trees = n.trees,
+                       nTrain = ceiling(dim(traindat)[1] * train.frac),
+                       verbose = FALSE) 
+      best_iter <- gbm.perf(y_fit, plot.it = F, method = 'test')
       pred.train <- predict(y_fit, traindat, n.trees = best_iter)
       basehaz.cum <- basehaz.gbm(traindat$y, traindat$D, pred.train, t.eval = times, cumulative = TRUE)
       
@@ -154,42 +153,38 @@ rgbm = function(x, w, y, D,
       for (k in 1:k_folds){
         testdat <- tempdat[foldid==k, ]
         traindat <- tempdat[!foldid==k, ]
-        c_fit <- gbm(Surv(y, 1-D)~.,
-                     data = traindat, 
-                     distribution = "coxph",
-                     shrinkage = shrinkage, 
-                     n.trees = n.trees,
-                     cv.folds = cv.folds, 
-                     n.cores = detectCores()) 
-        best_iter <- gbm.perf(c_fit, plot.it = F, method = 'cv')
+        c_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                         Surv(traindat$y, 1 - traindat$D),
+                         distribution = "coxph",
+                         shrinkage = shrinkage, 
+                         n.trees = n.trees,
+                         nTrain = ceiling(dim(traindat)[1] * train.frac),
+                         verbose = FALSE) 
+        best_iter <- gbm.perf(c_fit, plot.it = F, method = 'test')
         pred.train <- predict(c_fit, traindat, n.trees = best_iter)
         cent <- testdat$y
         cent[testdat$D==0] <- times
-        basehaz.cum <- rep(NA, length(cent))
-        for (z in 1:length(cent)){
-          basehaz.cum[z] <- basehaz.gbm(traindat$y, 1-traindat$D, pred.train, t.eval = cent[z], cumulative = TRUE)
-        }
+        basehaz.cum <- basehaz.gbm(traindat$y, 1-traindat$D, pred.train, t.eval = cent, cumulative = TRUE)
         pred.test <- predict(c_fit, testdat, n.trees = best_iter)
         c_hat[foldid==k] <- exp(-exp(pred.test)*basehaz.cum)
+        c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
       }
     } else {
-      c_fit <- gbm(Surv(y, 1 - D)~.,
-                   data = tempdat, 
-                   distribution = "coxph",
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees,
-                   cv.folds = cv.folds, 
-                   n.cores = detectCores()) 
-      best_iter <- gbm.perf(c_fit, plot.it = F, method = 'cv')
+      c_fit <- gbm.fit(tempdat[, 3:dim(tempdat)[2]],
+                       Surv(tempdat$y, 1 - tempdat$D),
+                       distribution = "coxph",
+                       shrinkage = shrinkage, 
+                       n.trees = n.trees,
+                       nTrain = ceiling(dim(tempdat)[1] * train.frac),
+                       verbose = FALSE) 
+      best_iter <- gbm.perf(c_fit, plot.it = F, method = 'test')
       pred.train <- predict(c_fit, tempdat, n.trees = best_iter)
       cent <- tempdat$y
       cent[tempdat$D==0] <- times
-      basehaz.cum <- rep(NA, length(cent))
-      for (z in 1:length(cent)){
-        basehaz.cum[z] <- basehaz.gbm(tempdat$y, 1 - tempdat$D, pred.train, t.eval = cent[z], cumulative = TRUE)
-      }
+      basehaz.cum <- basehaz.gbm(tempdat$y, 1 - tempdat$D, pred.train, t.eval = cent, cumulative = TRUE)
       pred.test <- predict(c_fit, tempdat, n.trees = best_iter)
       c_hat <- exp(-exp(pred.test) * basehaz.cum)
+      c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
     }
   }else{
     c_fit = NULL
@@ -206,15 +201,14 @@ rgbm = function(x, w, y, D,
   pseudo_outcome = y_tilde/w_tilde
   weights = w_tilde^2/binary_data$c_hat  
   
-  tau_dat <- data.frame(pseudo_outcome, binary_data[,7:dim(binary_data)[2]])
-  tau_fit <- gbm(pseudo_outcome ~ ., 
-                 data = tau_dat, 
-                 distribution = "gaussian",
-                 weights = weights,
-                 shrinkage = shrinkage, 
-                 n.trees = n.trees,
-                 cv.folds = cv.folds, 
-                 n.cores = detectCores()) 
+  tau_fit <- gbm.fit(binary_data[,7:dim(binary_data)[2]], 
+                     pseudo_outcome, 
+                     distribution = "gaussian",
+                     w = weights,
+                     shrinkage = shrinkage, 
+                     n.trees = n.trees,
+                     nTrain = ceiling(dim(binary_data)[1] * train.frac),
+                     verbose = FALSE) 
 
   ret = list(tau_fit = tau_fit,
              pseudo_outcome = pseudo_outcome,
@@ -261,10 +255,10 @@ predict.rgbm <- function(object,
     newx = sanitize_x(newx)
   }
   if (tau_only) {
-    best_iter_tau <- gbm.perf(object$tau_fit, plot.it = F, method = 'cv')
+    best_iter_tau <- gbm.perf(object$tau_fit, plot.it = F, method = 'test')
     return(predict(object$tau_fit, data.frame(newx), n.trees = best_iter_tau))
   } else {
-    best_iter_tau <- gbm.perf(object$tau_fit, plot.it = F, method = 'cv')
+    best_iter_tau <- gbm.perf(object$tau_fit, plot.it = F, method = 'test')
     tau <- predict(object$tau_fit, data.frame(newx), n.trees = best_iter_tau)
     e = predict(object$w_fit, newx = data.frame(newx))
     m = predict(object$y_fit, newx = data.frame(newx))
