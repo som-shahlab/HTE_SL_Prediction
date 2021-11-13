@@ -21,10 +21,6 @@ source("./rlearner_surv/rlasso.R")
 source("./rlearner_surv/rgbm.R")
 source("./rlearner_surv/rgrf.R")
 
-source("./grf-csf-prob/r-package/grf/R/causal_survival_forest.R")
-source("./grf-csf-prob/r-package/grf/R/input_utilities.R")
-source("./grf-csf-prob/r-package/grf/R/RcppExports.R")
-
 set.seed(123)
 
 
