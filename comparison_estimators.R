@@ -90,14 +90,6 @@ estimate_IPCW_grf = function(data, data.test, times = NULL) {
 #                 are defined as difference in survival probabilities for all five settings 
 # 2. comparison_estimators.R -- added more estimators, e.g., R-, X-, S-, T-learner, PTO, causal BART
 
-setwd("C:/Users/cryst/Documents/Stanford Postdoc/NHLBI R01 Aim 2/Analyses Stanford Team/rlearner")
-files.sources = list.files()
-sapply(files.sources, source)
-
-setwd("C:/Users/cryst/Documents/Stanford Postdoc/NHLBI R01 Aim 2/Analyses Stanford Team/flearner")
-files.sources = list.files()
-sapply(files.sources, source)
-
 base_surv <- function(fit, Y, D, x, lambda){
   data <- data.frame(t_event=Y, event=D, x)
   tab <- data.frame(table(data[data$event == 1, "t_event"])) 
@@ -148,7 +140,7 @@ pred_surv_preval <- function(fit, S0, times, lambda){
 }
 
 # S-learner 
-estimate_coxph_slearner <- function(data, data.test, times){
+estimate_coxph_slearner <- function(data, data.test, ps = NULL, times){
   
   scoxph_fit <- scoxph(x = data$X,
                        w = data$W,
@@ -159,7 +151,7 @@ estimate_coxph_slearner <- function(data, data.test, times){
   pred_S_coxph <- predict(scoxph_fit, newx = data.test$X, times = times)
 }
 
-estimate_lasso_slearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_lasso_slearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   
   slasso_fit <- slasso_surv(x = data$X,
                             w = data$W,
@@ -171,7 +163,8 @@ estimate_lasso_slearner <- function(data, data.test, nfolds = 10, alpha = 1, tim
   pred_S_lasso
 }
 
-estimate_gbm_slearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_gbm_slearner <- function(data, data.test, nfolds = 10, train.frac = 0.5,
+                                  shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   testdat <- data.frame(data.test$Y, data.test$D, data.test$W, data.test$X)
@@ -179,14 +172,14 @@ estimate_gbm_slearner <- function(data, data.test, nfolds = 10, cv.folds = 5, sh
   testdat1 <- testdat; testdat1$W <- 1
   testdat0 <- testdat; testdat0$W <- 0
   
-  gbmfit <- gbm(Surv(Y, D)~., 
-                data = traindat, 
-                distribution = "coxph",
-                shrinkage = shrinkage, 
-                n.trees = n.trees,   
-                cv.folds = cv.folds, 
-                n.cores = detectCores()) 
-  best_iter <- gbm.perf(gbmfit, plot.it = F, method = 'cv')
+  gbmfit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                    Surv(traindat$Y, traindat$D), 
+                    distribution = "coxph",
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees,
+                    nTrain = ceiling(dim(traindat)[1] * train.frac),
+                    verbose = FALSE)  
+  best_iter <- gbm.perf(gbmfit, plot.it = F, method = 'test')
   
   # return a vector of prediction on n.trees indicating log hazard scale.f(x)
   pred.train <- predict(gbmfit, traindat, n.trees = best_iter)
@@ -207,7 +200,7 @@ estimate_gbm_slearner <- function(data, data.test, nfolds = 10, cv.folds = 5, sh
   pred_S_gbm
 }
 
-estimate_grf_slearner <- function(data, data.test, times = NULL){
+estimate_grf_slearner <- function(data, data.test, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   testdat <- data.frame(data.test$Y, data.test$D, data.test$W, data.test$X)
@@ -216,8 +209,8 @@ estimate_grf_slearner <- function(data, data.test, times = NULL){
   testdat0 <- testdat; testdat0$W <- 0
   
   grffit <- survival_forest(as.matrix(traindat[,3:dim(traindat)[2]]),
-                            testdat$Y,
-                            testdat$D)
+                            traindat$Y,
+                            traindat$D)
   surf1 <- predict(grffit, as.matrix(testdat1[,3:dim(testdat1)[2]]))$predictions[, which.min(abs(grffit$failure.times-times))]
   surf0 <- predict(grffit, as.matrix(testdat0[,3:dim(testdat0)[2]]))$predictions[, which.min(abs(grffit$failure.times-times))]
   pred_S_grf <- surf1 - surf0
@@ -226,7 +219,7 @@ estimate_grf_slearner <- function(data, data.test, times = NULL){
 
 
 # T-learner 
-estimate_coxph_tlearner <- function(data, data.test, times){
+estimate_coxph_tlearner <- function(data, data.test, ps = NULL, times){
   
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
@@ -251,7 +244,7 @@ estimate_coxph_tlearner <- function(data, data.test, times){
   pred_T_coxph
 }
 
-estimate_lasso_tlearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_lasso_tlearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   traindat1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
@@ -301,21 +294,22 @@ estimate_lasso_tlearner <- function(data, data.test, nfolds = 10, alpha = 1, tim
   pred_T_lasso
 }
 
-estimate_gbm_tlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_gbm_tlearner <- function(data, data.test, nfolds = 10, train.frac = 0.5,
+                                  shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   traindat1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
   traindat0 <- traindat[traindat$W==0, !colnames(traindat) %in% c("W")]
   
   # Model for W = 1
-  gbm_fit1 <- gbm(Surv(Y, D)~.,
-                  data = traindat1,
-                  distribution = "coxph",
-                  shrinkage = shrinkage, 
-                  n.trees = n.trees,   
-                  cv.folds = cv.folds, 
-                  n.cores = detectCores())
-  best_iter <- gbm.perf(gbm_fit1, plot.it = F, method = 'cv')
+  gbm_fit1 <- gbm.fit(traindat1[, 3:dim(traindat1)[2]],
+                      Surv(traindat1$Y, traindat1$D), 
+                      distribution = "coxph",
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,  
+                      nTrain = ceiling(dim(traindat1)[1] * train.frac),
+                      verbose = FALSE)
+  best_iter <- gbm.perf(gbm_fit1, plot.it = F, method = 'test')
   
   # return a vector of prediction on n.trees indicating log hazard scale.f(x)
   pred.train1 <- predict(gbm_fit1, traindat1, n.trees = best_iter)
@@ -324,13 +318,14 @@ estimate_gbm_tlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, sh
   basehaz.cum1 <- basehaz.gbm(traindat1$Y, traindat1$D, pred.train1, t.eval = times, cumulative = TRUE)
   
   # Model for W = 0
-  gbm_fit0 <- gbm(Surv(Y, D)~.,
-                  data = traindat0,
-                  distribution = "coxph",
-                  shrinkage = shrinkage, 
-                  n.trees = n.trees,   
-                  cv.folds = cv.folds)
-  best_iter <- gbm.perf(gbm_fit0, plot.it = F, method = 'cv')
+  gbm_fit0 <- gbm.fit(traindat0[, 3:dim(traindat0)[2]],
+                      Surv(traindat0$Y, traindat0$D),
+                      distribution = "coxph",
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,   
+                      nTrain = ceiling(dim(traindat0)[1] * train.frac),
+                      verbose = FALSE)
+  best_iter <- gbm.perf(gbm_fit0, plot.it = F, method = 'test')
   
   # return a vector of prediction on n.trees indicating log hazard scale.f(x)
   pred.train0 <- predict(gbm_fit0, traindat0, n.trees = best_iter)
@@ -348,7 +343,7 @@ estimate_gbm_tlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, sh
   pred_T_gbm
 }
 
-estimate_grf_tlearner <- function(data, data.test, times = NULL){
+estimate_grf_tlearner <- function(data, data.test, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   traindat1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
@@ -356,23 +351,23 @@ estimate_grf_tlearner <- function(data, data.test, times = NULL){
   
   # Model for W = 1
   grffit1 <- survival_forest(as.matrix(traindat1[,3:dim(traindat1)[2]]),
-                            traindat1$Y,
-                            traindat1$D)
+                             traindat1$Y,
+                             traindat1$D)
   surf1 <- predict(grffit1, data.test$X)$predictions[, which.min(abs(grffit1$failure.times-times))]
 
   # Model for W = 0
   grffit0 <- survival_forest(as.matrix(traindat0[,3:dim(traindat0)[2]]),
-                            traindat0$Y,
-                            traindat0$D)
+                             traindat0$Y,
+                             traindat0$D)
   surf0 <- predict(grffit0, data.test$X)$predictions[, which.min(abs(grffit0$failure.times-times))]
   
-  pred_T_gbm <- surf1 - surf0
-  pred_T_gbm
+  pred_T_grf <- surf1 - surf0
+  pred_T_grf
 }
 
 
 # "IPCW" - X-learner gradient boosting
-estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
@@ -434,13 +429,16 @@ estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alph
   cent <- rep(times, length(traindat$Y))
   cent[traindat$D==1] <- traindat$Y[traindat$D==1]
   c_hat <- pred_surv(c_fit, S0, as.matrix(traindat[,3:dim(traindat)[2]]), times = cent, lambda = c_fit$lambda.min)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   
   # Propensity score
-  w_fit <- cv.glmnet(data$X, 
-                     data$W,
-                     foldid = foldid,
-                     alpha = 1)
-  ps <- as.vector(predict(w_fit, newx = data$X, s = w_fit$lambda.min))
+  if (is.null(ps)){
+    w_fit <- cv.glmnet(data$X, 
+                       data$W,
+                       foldid = foldid,
+                       alpha = 1)
+    ps <- as.vector(predict(w_fit, newx = data$X, s = w_fit$lambda.min))
+  }
   
   weight <- (1 / c_hat) * (1 / ps)
   
@@ -452,7 +450,7 @@ estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alph
   binary_data <- binary_data[complete.cases(binary_data), ]
   
   foldid <- sample(rep(seq(nfolds), length = length(binary_data[binary_data$W==1,]$Y)))
-  XLfit1 <- cv.glmnet(as.matrix(binary_data[binary_data$W==1,5:9]), 
+  XLfit1 <- cv.glmnet(as.matrix(binary_data[binary_data$W==1, 5:(dim(binary_data)[2]-2)]), 
                       binary_data$D[binary_data$W==1] - binary_data$Tgbm0[binary_data$W==1],
                       weights = binary_data$weight[binary_data$W==1],
                       foldid = foldid,
@@ -460,7 +458,7 @@ estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alph
   XLtau1 <- as.vector(-predict(XLfit1, data.test$X, s = XLfit1$lambda.min))
   
   foldid <- sample(rep(seq(nfolds), length = length(binary_data[binary_data$W==0,]$Y)))
-  XLfit0 <- cv.glmnet(as.matrix(binary_data[binary_data$W==0,5:9]), 
+  XLfit0 <- cv.glmnet(as.matrix(binary_data[binary_data$W==0, 5:(dim(binary_data)[2]-2)]), 
                       binary_data$Tgbm1[binary_data$W==0] - binary_data$D[binary_data$W==0],
                       weights = binary_data$weight[binary_data$W==0],
                       foldid = foldid,
@@ -468,12 +466,16 @@ estimate_ipcw_wocf_lasso_xlearner <- function(data, data.test, nfolds = 10, alph
   XLtau0 <- as.vector(-predict(XLfit0, data.test$X, s = XLfit0$lambda.min))
   
   # propensity score
-  ps.test <- as.vector(predict(w_fit, newx = data.test$X, s = w_fit$lambda.min))
+  if (is.null(ps)){
+    ps.test <- as.vector(predict(w_fit, newx = data.test$X, s = w_fit$lambda.min))
+  }else{
+    ps.test <- rep(ps, length(data.test$W))
+  }
   pred_X_lasso <- XLtau1 * ps.test + XLtau0 * (1 - ps.test)
   as.vector(pred_X_lasso)
 }
 
-estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
@@ -536,17 +538,20 @@ estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha
   cent <- rep(times, length(traindat$Y))
   cent[traindat$D==1] <- traindat$Y[traindat$D==1]
   c_hat <- pred_surv_preval(c_fit, S0, times = cent, lambda = c_lambda_min)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   
   # Propensity score (cross-fitted using 'preval' in glmnet)
-  w_fit <- cv.glmnet(as.matrix(traindat[, 4:dim(traindat)[2]]),
-                     traindat$W,
-                     foldid = foldid,
-                     keep = TRUE,
-                     alpha = alpha)
-  
-  w_lambda_min <- w_fit$lambda[which.min(w_fit$cvm[!is.na(colSums(w_fit$fit.preval))])]
-  ps <- w_fit$fit.preval[,!is.na(colSums(w_fit$fit.preval))][, w_fit$lambda[!is.na(colSums(w_fit$fit.preval))] == w_lambda_min]
-  
+  if (is.null(ps)){
+    w_fit <- cv.glmnet(as.matrix(traindat[, 4:dim(traindat)[2]]),
+                       traindat$W,
+                       foldid = foldid,
+                       keep = TRUE,
+                       alpha = alpha)
+    
+    w_lambda_min <- w_fit$lambda[which.min(w_fit$cvm[!is.na(colSums(w_fit$fit.preval))])]
+    ps <- w_fit$fit.preval[,!is.na(colSums(w_fit$fit.preval))][, w_fit$lambda[!is.na(colSums(w_fit$fit.preval))] == w_lambda_min]
+  }
+    
   weight <- (1 / c_hat)*(1 / ps)
   
   # X-learner
@@ -557,7 +562,7 @@ estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha
   binary_data <- binary_data[complete.cases(binary_data), ]
   
   foldid <- sample(rep(seq(nfolds), length = length(binary_data[binary_data$W==1,]$Y)))
-  XLfit1 <- cv.glmnet(as.matrix(binary_data[binary_data$W==1, 5:9]), 
+  XLfit1 <- cv.glmnet(as.matrix(binary_data[binary_data$W==1, 5:(dim(binary_data)[2]-2)]), 
                       binary_data$D[binary_data$W==1] - binary_data$Tgbm0[binary_data$W==1],
                       weights = binary_data$weight[binary_data$W==1],
                       foldid = foldid,
@@ -565,7 +570,7 @@ estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha
   XLtau1 <- as.vector(-predict(XLfit1, data.test$X, s = XLfit1$lambda.min))
   
   foldid <- sample(rep(seq(nfolds), length = length(binary_data[binary_data$W==0,]$Y)))
-  XLfit0 <- cv.glmnet(as.matrix(binary_data[binary_data$W==0, 5:9]), 
+  XLfit0 <- cv.glmnet(as.matrix(binary_data[binary_data$W==0, 5:(dim(binary_data)[2]-2)]), 
                       binary_data$Tgbm1[binary_data$W==0] - binary_data$D[binary_data$W==0],
                       weights = binary_data$weight[binary_data$W==0],
                       foldid = foldid,
@@ -573,12 +578,17 @@ estimate_ipcw_wcf_lasso_xlearner <- function(data, data.test, nfolds = 10, alpha
   XLtau0 <- as.vector(-predict(XLfit0, data.test$X, s = XLfit0$lambda.min))
   
   # propensity score
-  ps.test <- as.vector(predict(w_fit, newx = data.test$X, s = w_fit$lambda.min))
+  if (is.null(ps)){
+    ps.test <- as.vector(predict(w_fit, newx = data.test$X, s = w_fit$lambda.min))
+  }else{
+    ps.test <- rep(ps, length(data.test$W))
+  }
   pred_X_lasso <- XLtau1 * ps.test + XLtau0 * (1 - ps.test)
   as.vector(pred_X_lasso)
 }
 
-estimate_ipcw_wocf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_ipcw_wocf_gbm_xlearner <- function(data, data.test, nfolds = 10, train.frac = 0.5, 
+                                            shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
@@ -586,28 +596,28 @@ estimate_ipcw_wocf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fol
   
   # fit model on W==1
   train1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
-  gbm_fit1 <- gbm(Surv(Y, D) ~ .,
-                  data = train1,
-                  distribution = "coxph",
-                  shrinkage = shrinkage, 
-                  n.trees = n.trees,   
-                  cv.folds = cv.folds, 
-                  n.cores = detectCores())
-  best.iter1 <- gbm.perf(gbm_fit1, plot.it = F, method = 'cv')
+  gbm_fit1 <- gbm.fit(train1[, 3:dim(train1)[2]],
+                      Surv(train1$Y, train1$D),
+                      distribution = "coxph",
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,  
+                      nTrain = ceiling(dim(train1)[1] * train.frac),
+                      verbose = FALSE)
+  best.iter1 <- gbm.perf(gbm_fit1, plot.it = F, method = 'test')
   pred.train1 <- predict(gbm_fit1, train1, n.trees = best.iter1)
   pred.test1  <- predict(gbm_fit1, testdat, n.trees = best.iter1)
   basehaz.cum1 <- basehaz.gbm(train1$Y, train1$D, pred.train1, t.eval = times, cumulative = TRUE)
   
   # fit model on W==0
   train0 <- traindat[traindat$W==0, !colnames(traindat) %in% c("W")]
-  gbm_fit0 <- gbm(Surv(Y, D) ~ .,
-                  data = train0,
-                  distribution = "coxph",
-                  shrinkage = shrinkage, 
-                  n.trees = n.trees,   
-                  cv.folds = cv.folds, 
-                  n.cores = detectCores())
-  best.iter0 <- gbm.perf(gbm_fit0, plot.it = F, method = 'cv')
+  gbm_fit0 <- gbm.fit(train0[, 3:dim(train0)[2]],
+                      Surv(train0$Y, train0$D),
+                      distribution = "coxph",
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,   
+                      nTrain = ceiling(dim(train0)[1] * train.frac),
+                      verbose = FALSE)
+  best.iter0 <- gbm.perf(gbm_fit0, plot.it = F, method = 'test')
   pred.train0 <- predict(gbm_fit0, train0, n.trees = best.iter0)
   pred.test0  <- predict(gbm_fit0, testdat, n.trees = best.iter0)
   basehaz.cum0 <- basehaz.gbm(train0$Y, train0$D, pred.train0, t.eval = times, cumulative = TRUE)
@@ -622,37 +632,37 @@ estimate_ipcw_wocf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fol
   Tgbm0 <- 1-surf0
   
   # IPCW weights
-  c_fit <- gbm(Surv(Y, 1-D)~.,
-               data = traindat, 
-               distribution = "coxph",
-               shrinkage = shrinkage, 
-               n.trees = n.trees,   
-               cv.folds = cv.folds, 
-               n.cores = detectCores()) 
-  best_iter <- gbm.perf(c_fit, plot.it = F, method = 'cv')
+  c_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                   Surv(traindat$Y, 1 - traindat$D),
+                   distribution = "coxph",
+                   shrinkage = shrinkage, 
+                   n.trees = n.trees, 
+                   nTrain = ceiling(dim(traindat)[1] * train.frac),
+                   verbose = FALSE) 
+  best_iter <- gbm.perf(c_fit, plot.it = F, method = 'test')
   
   # baseline hazard
   pred.train <- predict(c_fit, traindat, n.trees = best_iter)
   cent <- traindat$Y
   cent[traindat$D==0] <- times
-  basehaz.cum <- rep(NA, length(cent))
-  for (z in 1:length(cent)){
-    basehaz.cum[z] <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent[z], cumulative = TRUE)
-  }
+  basehaz.cum <- basehaz.gbm(traindat$Y, 1 - traindat$D, pred.train, t.eval = cent, cumulative = TRUE)
   pred.test <- predict(c_fit, traindat[, 3:dim(traindat)[2]], n.trees = best_iter)
   c_hat <- exp(-exp(pred.test)*basehaz.cum)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   
-  # Propensity score 
-  tmpdat <- traindat[, 3:dim(traindat)[2]]
-  w_fit <- gbm(W ~ ., 
-               data = tmpdat, 
-               shrinkage = shrinkage, 
-               n.trees = n.trees,   
-               cv.folds = cv.folds, 
-               n.cores = detectCores()) 
-  best_iter_ps <- gbm.perf(w_fit, plot.it = F, method = 'cv')
-  log_odds <- predict(w_fit, tmpdat[, 2:dim(tmpdat)[2]], n.trees = best_iter_ps)
-  ps <- 1/(1 + exp(-log_odds))
+  # Propensity score
+  if (is.null(ps)){
+    w_fit <- gbm.fit(traindat[, 4:dim(traindat)[2]], 
+                     traindat$W, 
+                     distribution = "bernoulli",
+                     shrinkage = shrinkage, 
+                     n.trees = n.trees,   
+                     nTrain = ceiling(dim(traindat)[1] * train.frac),
+                     verbose = FALSE) 
+    best_iter_ps <- gbm.perf(w_fit, plot.it = F, method = 'test')
+    log_odds <- predict(w_fit, traindat[, 4:dim(traindat)[2]], n.trees = best_iter_ps)
+    ps <- 1/(1 + exp(-log_odds))
+  }
   
   weight <- (1 / c_hat) * (1 / ps)
   
@@ -663,38 +673,43 @@ estimate_ipcw_wocf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fol
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  XLfit1 <- gbm(Y ~ .,
-                distribution = "gaussian",
-                data = data.frame(Y = binary_data$D[binary_data$W==1] - binary_data$Tgbm0[binary_data$W==1],
-                                  binary_data[binary_data$W==1, 5:9]),
-                weights = binary_data$weight[binary_data$W==1],
-                shrinkage = shrinkage, 
-                n.trees = n.trees,   
-                cv.folds = cv.folds, 
-                n.cores = detectCores())
-  best_iter_tau1 <- gbm.perf(XLfit1, plot.it = F, method = 'cv')
+  binarydat1 <- binary_data[binary_data$W==1,]
+  XLfit1 <- gbm.fit(binarydat1[, 5:(dim(binary_data)[2]-2)],
+                    binarydat1$D - binarydat1$Tgbm0,
+                    distribution = "gaussian",
+                    w = binarydat1$weight,
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees,
+                    nTrain = ceiling(dim(binarydat1)[1] * train.frac),
+                    verbose = FALSE)
+  best_iter_tau1 <- gbm.perf(XLfit1, plot.it = F, method = 'test')
   XLtau1 <- -predict(XLfit1, data.frame(data.test$X), n.trees = best_iter_tau1)
   
-  XLfit0 <- gbm(Y ~ .,
-                distribution = "gaussian",
-                data = data.frame(Y = binary_data$Tgbm1[binary_data$W==0] - binary_data$D[binary_data$W==0],
-                                  binary_data[binary_data$W==0, 5:9]),
-                weights = binary_data$weight[binary_data$W==0],
-                shrinkage = shrinkage, 
-                n.trees = n.trees,   
-                cv.folds = cv.folds, 
-                n.cores = detectCores())
-  best_iter_tau0 <- gbm.perf(XLfit0, plot.it = F, method = 'cv')
+  binarydat0 <- binary_data[binary_data$W==0,]
+  XLfit0 <- gbm.fit(binarydat0[, 5:(dim(binary_data)[2]-2)],
+                    binarydat0$Tgbm1 - binarydat0$D,
+                    distribution = "gaussian",
+                    w = binarydat0$weight,
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees,   
+                    nTrain = ceiling(dim(binarydat0)[1] * train.frac),
+                    verbose = FALSE)
+  best_iter_tau0 <- gbm.perf(XLfit0, plot.it = F, method = 'test')
   XLtau0 <- -predict(XLfit0, data.frame(data.test$X), n.trees=best_iter_tau0)
   
   # propensity score
-  log_odds <- predict(w_fit, data.frame(data.test$X), n.trees = best_iter_ps)
-  ps_score <- 1/(1 + exp(-log_odds))
+  if (is.null(ps)){
+    log_odds <- predict(w_fit, data.frame(data.test$X), n.trees = best_iter_ps)
+    ps_score <- 1/(1 + exp(-log_odds))
+  }else{
+    ps_score <- rep(ps, length(data.test$W))
+  }
   pred_X_gbm <- XLtau1 * ps_score + XLtau0 * (1 - ps_score)
   pred_X_gbm
 }
 
-estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, train.frac = 0.5,
+                                           shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   
   tempdat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(tempdat)[1:3] <- c("Y", "D", "W")
@@ -707,14 +722,14 @@ estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fold
     traindat <- tempdat[!foldid==k, ]
     train1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
     
-    gbm_fit1 <- gbm(Surv(Y, D) ~ .,
-                    data = train1,
-                    distribution = "coxph",
-                    shrinkage = shrinkage, 
-                    n.trees = n.trees,   
-                    cv.folds = cv.folds, 
-                    n.cores = detectCores())
-    best.iter1 <- gbm.perf(gbm_fit1, plot.it = F, method = 'cv')
+    gbm_fit1 <- gbm.fit(train1[, 3:dim(train1)[2]],
+                        Surv(train1$Y, train1$D),
+                        distribution = "coxph",
+                        shrinkage = shrinkage, 
+                        n.trees = n.trees, 
+                        nTrain = ceiling(dim(train1)[1] * train.frac),
+                        verbose = FALSE)
+    best.iter1 <- gbm.perf(gbm_fit1, plot.it = F, method = 'test')
     pred.train1 <- predict(gbm_fit1, train1, n.trees = best.iter1)
     pred.test1  <- predict(gbm_fit1, testdat, n.trees = best.iter1)
     basehaz.cum1 <- basehaz.gbm(train1$Y, train1$D, pred.train1, t.eval = times, cumulative = TRUE)
@@ -732,14 +747,14 @@ estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fold
     traindat <- tempdat[!foldid==k, ]
     train0 <- traindat[traindat$W==0, !colnames(traindat) %in% c("W")]
     
-    gbm_fit0 <- gbm(Surv(Y, D) ~ .,
-                    data = train0,
-                    distribution = "coxph",
-                    shrinkage = shrinkage, 
-                    n.trees = n.trees,   
-                    cv.folds = cv.folds, 
-                    n.cores = detectCores())
-    best.iter0 <- gbm.perf(gbm_fit0, plot.it = F, method = 'cv')
+    gbm_fit0 <- gbm.fit(train0[, 3:dim(train0)[2]],
+                        Surv(train0$Y, train0$D),
+                        distribution = "coxph",
+                        shrinkage = shrinkage, 
+                        n.trees = n.trees,  
+                        nTrain = ceiling(dim(train0)[1] * train.frac),
+                        verbose = FALSE)
+    best.iter0 <- gbm.perf(gbm_fit0, plot.it = F, method = 'test')
     pred.train0 <- predict(gbm_fit0, train0, n.trees = best.iter0)
     pred.test0  <- predict(gbm_fit0, testdat, n.trees = best.iter0)
     basehaz.cum0 <- basehaz.gbm(train0$Y, train0$D, pred.train0, t.eval = times, cumulative = TRUE)
@@ -756,43 +771,42 @@ estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fold
   for (k in 1:nfolds){
     testdat <- tempdat[foldid==k, ]
     traindat <- tempdat[!foldid==k, ]
-    c_fit <- gbm(Surv(Y, 1-D)~.,
-                 data = traindat, 
-                 distribution = "coxph",
-                 shrinkage = shrinkage, 
-                 n.trees = n.trees,   
-                 cv.folds = cv.folds, 
-                 n.cores = detectCores()) 
-    best_iter <- gbm.perf(c_fit, plot.it = F, method = 'cv')
+    c_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                     Surv(traindat$Y, 1 - traindat$D), 
+                     distribution = "coxph",
+                     shrinkage = shrinkage, 
+                     n.trees = n.trees,   
+                     nTrain = ceiling(dim(traindat)[1] * train.frac),  # number of censored is too low, so not splitting the data in halves again
+                     verbose = FALSE) 
+    best_iter <- gbm.perf(c_fit, plot.it = F, method = 'test')
     
     # baseline hazard
     pred.train <- predict(c_fit, traindat, n.trees = best_iter)
     cent <- testdat$Y
     cent[testdat$D==0] <- times
-    basehaz.cum <- rep(NA, length(cent))
-    for (z in 1:length(cent)){
-      basehaz.cum[z] <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent[z], cumulative = TRUE)
-    }
+    basehaz.cum <- basehaz.gbm(traindat$Y, 1 - traindat$D, pred.train, t.eval = cent, cumulative = TRUE)
     pred.test <- predict(c_fit, testdat[,3:dim(testdat)[2]], n.trees = best_iter)
     c_hat[foldid==k] <- exp(-exp(pred.test)*basehaz.cum)
   }
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   
   # Propensity score
-  ps <- rep(NA, length(tempdat$W))
-  for (k in 1:nfolds){
-    testdat <- tempdat[foldid==k, ]
-    traindat <- tempdat[!foldid==k, ]
-    w_dat <- traindat[, 3:dim(traindat)[2]]
-    w_fit <- gbm(W ~ ., 
-                 data = w_dat, 
-                 distribution = "bernoulli",
-                 shrinkage = shrinkage, 
-                 n.trees = n.trees,   
-                 cv.folds = cv.folds, 
-                 n.cores = detectCores()) 
-    best_iter <- gbm.perf(w_fit, plot.it = F, method = 'cv')
-    log_odds <- predict(w_fit, testdat[, 4:dim(testdat)[2]], n.trees = best_iter)
-    ps[foldid==k] <- 1/(1 + exp(-log_odds))
+  if (is.null(ps)){
+    ps <- rep(NA, length(tempdat$W))
+    for (k in 1:nfolds){
+      testdat <- tempdat[foldid==k, ]
+      traindat <- tempdat[!foldid==k, ]
+      w_fit <- gbm.fit(traindat[, 4:dim(traindat)[2]],
+                       traindat$W, 
+                       distribution = "bernoulli",
+                       shrinkage = shrinkage, 
+                       n.trees = n.trees,   
+                       nTrain = ceiling(dim(traindat)[1] * train.frac),
+                       verbose = FALSE) 
+      best_iter <- gbm.perf(w_fit, plot.it = F, method = 'test')
+      log_odds <- predict(w_fit, testdat[, 4:dim(testdat)[2]], n.trees = best_iter)
+      ps[foldid==k] <- 1/(1 + exp(-log_odds))
+    }
   }
   
   weight <- (1 / c_hat) * (1 / ps)
@@ -804,60 +818,66 @@ estimate_ipcw_wcf_gbm_xlearner <- function(data, data.test, nfolds = 10, cv.fold
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  XLfit1 <- gbm(Y ~ .,
-                distribution = "gaussian",
-                data = data.frame(Y = binary_data$D[binary_data$W==1] - binary_data$Tgbm0[binary_data$W==1],
-                                  binary_data[binary_data$W==1,5:9]),
-                weights = binary_data$weight[binary_data$W==1],
-                shrinkage = shrinkage, 
-                n.trees = n.trees,   
-                cv.folds = cv.folds, 
-                n.cores = detectCores())
-  best_iter_tau1 <- gbm.perf(XLfit1, plot.it = F, method = 'cv')
+  binarydat1 <- binary_data[binary_data$W==1,]
+  XLfit1 <- gbm.fit(binarydat1[,5:(dim(binary_data)[2]-2)],
+                    binarydat1$D - binarydat1$Tgbm0,
+                    distribution = "gaussian",
+                    w = binarydat1$weight,
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees,   
+                    nTrain = ceiling(dim(binarydat1)[1] * train.frac),
+                    verbose = FALSE)
+  best_iter_tau1 <- gbm.perf(XLfit1, plot.it = F, method = 'test')
   XLtau1 <- -predict(XLfit1, data.frame(data.test$X), n.trees = best_iter_tau1)
   
-  XLfit0 <- gbm(Y ~ .,
-                distribution = "gaussian",
-                data = data.frame(Y = binary_data$Tgbm1[binary_data$W==0] - binary_data$D[binary_data$W==0],
-                                  binary_data[binary_data$W==0,5:9]),
-                weights = binary_data$weight[binary_data$W==0],
-                shrinkage = shrinkage, 
-                n.trees = n.trees,   
-                cv.folds = cv.folds, 
-                n.cores = detectCores())
-  best_iter_tau0 <- gbm.perf(XLfit0, plot.it = F, method = 'cv')
+  binarydat0 <- binary_data[binary_data$W==0,]
+  XLfit0 <- gbm.fit(binarydat0[,5:(dim(binary_data)[2]-2)],
+                    binarydat0$Tgbm1 - binarydat0$D,
+                    distribution = "gaussian",
+                    w = binarydat0$weight,
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees,   
+                    nTrain = ceiling(dim(binarydat0)[1] * train.frac),
+                    verbose = FALSE)
+  best_iter_tau0 <- gbm.perf(XLfit0, plot.it = F, method = 'test')
   XLtau0 <- -predict(XLfit0, data.frame(data.test$X), n.trees = best_iter_tau0)
   
   # propensity score
-  tmpdat <- tempdat[, 3:dim(tempdat)[2]]
-  w_fit_test <- gbm(W ~ ., 
-                    distribution = "bernoulli",
-                    data = tmpdat, 
-                    shrinkage = shrinkage, 
-                    n.trees = n.trees,   
-                    cv.folds = cv.folds, 
-                    n.cores = detectCores()) 
-  best_iter_ps <- gbm.perf(w_fit_test, plot.it = F, method = 'cv')
-  log_odds <- predict(w_fit_test, data.frame(data.test$X), n.trees = best_iter_ps)
-  ps_score <- 1/(1 + exp(-log_odds))
+  if (is.null(ps)){
+    w_fit_test <- gbm.fit(tempdat[, 4:dim(tempdat)[2]],
+                          tempdat$W,
+                          distribution = "bernoulli",
+                          shrinkage = shrinkage, 
+                          n.trees = n.trees,   
+                          nTrain = ceiling(dim(tempdat)[1] * train.frac),
+                          verbose = FALSE) 
+    best_iter_ps <- gbm.perf(w_fit_test, plot.it = F, method = 'test')
+    log_odds <- predict(w_fit_test, data.frame(data.test$X), n.trees = best_iter_ps)
+    ps_score <- 1/(1 + exp(-log_odds))
+  }else{
+    ps_score <- rep(ps, length(data.test$W))
+  }
   pred_X_gbm <- XLtau1 * ps_score + XLtau0 * (1 - ps_score)
   pred_X_gbm
 }
 
-estimate_ipcw_grf_xlearner <- function(data, data.test, times = NULL){
+estimate_ipcw_grf_xlearner <- function(data, data.test, ps = NULL, times = times){
   
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   testdat <- traindat[, !colnames(traindat) %in% c("W")]   
   
+  Y.grid <- sort(unique(data$Y))
+  times.index <- findInterval(times, Y.grid)
+  
   # fit model on W==1
   train1 <- traindat[traindat$W==1, !colnames(traindat) %in% c("W")]
   grffit1 <- survival_forest(as.matrix(train1[,3:dim(train1)[2]]),
-                            train1$Y,
-                            train1$D)
+                             train1$Y,
+                             train1$D)
   surf1 <- rep(NA, length(traindat$Y))
-  surf1[traindat$W==1] <- grffit1$predictions[, which.min(abs(grffit1$failure.times-times))]
-  surf1[traindat$W==0]<- predict(grffit1, as.matrix(traindat[traindat$W==0, 4:dim(traindat)[2]]))$predictions[, which.min(abs(grffit1$failure.times-times))]
+  surf1[traindat$W==1] <- predict(grffit1, failure.times = Y.grid)$predictions[, times.index]
+  surf1[traindat$W==0]<- predict(grffit1, as.matrix(traindat[traindat$W==0, 4:dim(traindat)[2]]), failure.times = Y.grid)$predictions[, times.index]
   
   # fit model on W==0
   train0 <- traindat[traindat$W==0, !colnames(traindat) %in% c("W")]
@@ -865,8 +885,8 @@ estimate_ipcw_grf_xlearner <- function(data, data.test, times = NULL){
                              train0$Y,
                              train0$D)
   surf0 <- rep(NA, length(traindat$Y))
-  surf0[traindat$W==0] <- grffit0$predictions[, which.min(abs(grffit0$failure.times-times))]
-  surf0[traindat$W==1] <- predict(grffit0, as.matrix(traindat[traindat$W==1, 4:dim(traindat)[2]]))$predictions[, which.min(abs(grffit0$failure.times-times))]
+  surf0[traindat$W==0] <- predict(grffit0, failure.times = Y.grid)$predictions[, times.index]
+  surf0[traindat$W==1] <- predict(grffit0, as.matrix(traindat[traindat$W==1, 4:dim(traindat)[2]]), failure.times = Y.grid)$predictions[, times.index]
   
   Tgbm1 <- 1-surf1
   Tgbm0 <- 1-surf0
@@ -876,22 +896,22 @@ estimate_ipcw_grf_xlearner <- function(data, data.test, times = NULL){
                                traindat$Y,
                                1 - traindat$D,
                                prediction.type = "Nelson-Aalen")
-  C.hat <- sf.censor$predictions
+  C.hat <- predict(sf.censor, failure.times = Y.grid)$predictions
   cent <- traindat$Y
   cent[traindat$D==0] <- times
-  C.index <- rep(NA, length(cent))
-  for (h in 1:length(cent)){
-    C.index[h] <- which.min(abs(sort(unique(traindat$Y[traindat$D==0]))-cent[h]))
-  }
-  C.Y.hat <- C.hat[cbind(1:length(traindat$Y), C.index)]
+  cen.times.index <- findInterval(cent, Y.grid)
+  C.Y.hat <- C.hat[cbind(1:length(traindat$Y), cen.times.index)]
+  C.Y.hat[C.Y.hat==0] <- min(C.Y.hat[C.Y.hat!=0])
   ipcw <- 1 / C.Y.hat
   
   # Propensity score 
-  tmpdat <- traindat[, 3:dim(traindat)[2]]
-  psfit <- regression_forest(as.matrix(tmpdat[,2:dim(tmpdat)[2]]), 
-                             tmpdat$W, 
-                             tune.parameters = "all") 
-  ps <- psfit$predictions
+  if (is.null(ps)){
+    tmpdat <- traindat[, 3:dim(traindat)[2]]
+    psfit <- regression_forest(as.matrix(tmpdat[,2:dim(tmpdat)[2]]), 
+                               tmpdat$W, 
+                               tune.parameters = "all") 
+    ps <- psfit$predictions
+  }
   
   weight <- ipcw/ps  # censoring weight * treatment weight
     
@@ -902,30 +922,35 @@ estimate_ipcw_grf_xlearner <- function(data, data.test, times = NULL){
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  XLfit1 <- regression_forest(as.matrix(binary_data[binary_data$W==1, 5:9]),
+  XLfit1 <- regression_forest(as.matrix(binary_data[binary_data$W==1, 5:(dim(binary_data)[2]-2)]),
                               binary_data$D[binary_data$W==1] - binary_data$Tgbm0[binary_data$W==1],
                               sample.weights = binary_data$weight[binary_data$W==1], 
                               tune.parameters = "all")
   XLtau1 <- -predict(XLfit1, data.frame(data.test$X))
   
-  XLfit0 <- regression_forest(as.matrix(binary_data[binary_data$W==0, 5:9]),
+  XLfit0 <- regression_forest(as.matrix(binary_data[binary_data$W==0, 5:(dim(binary_data)[2]-2)]),
                               binary_data$D[binary_data$W==0] - binary_data$Tgbm0[binary_data$W==0],
                               sample.weights = binary_data$weight[binary_data$W==0], 
                               tune.parameters = "all")
   XLtau0 <- -predict(XLfit0, data.frame(data.test$X))
 
-  ps_test <- predict(psfit, data.test$X)$predictions
+  if (is.null(ps)){
+    ps_test <- predict(psfit, data.test$X)$predictions
+  }else{
+    ps_test <- rep(ps, length(data.test$W))
+  }
   pred_X_grf <- XLtau1 * ps_test + XLtau0 * (1 - ps_test)
   pred_X_grf
 }
 
 
 # "IPCW" R-learner 
-estimate_ipcw_wocf_lasso_rlearner <- function(data, data.test, nfolds = 10, alpha = 1, times=NULL){
+estimate_ipcw_wocf_lasso_rlearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times=times){
   rlasso_fit <- rlasso(x = data$X, 
                        w = data$W, 
                        y = data$Y, 
                        D = data$D,
+                       p_hat = ps,
                        alpha = alpha,
                        k_folds = nfolds,
                        cf = FALSE,
@@ -934,11 +959,12 @@ estimate_ipcw_wocf_lasso_rlearner <- function(data, data.test, nfolds = 10, alph
   as.vector(rlasso_est)
 }
 
-estimate_ipcw_wcf_lasso_rlearner <- function(data, data.test, nfolds = 10, alpha = 1, times=NULL){
+estimate_ipcw_wcf_lasso_rlearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times=times){
   rlasso_fit <- rlasso(x = data$X, 
                        w = data$W, 
                        y = data$Y, 
                        D = data$D, 
+                       p_hat = ps,
                        alpha = alpha,
                        k_folds = nfolds,
                        times = times)
@@ -946,38 +972,43 @@ estimate_ipcw_wcf_lasso_rlearner <- function(data, data.test, nfolds = 10, alpha
   as.vector(rlasso_est)
 }
 
-estimate_ipcw_wocf_gbm_rlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times=NULL){
+estimate_ipcw_wocf_gbm_rlearner <- function(data, data.test, nfolds = 10, train.frac = 0.5, 
+                                            shrinkage = 0.01, n.trees = 1000, ps = NULL, times=times){
   rgbm_fit <- rgbm(x = data$X, 
-                   w = data$W, 
-                   y = data$Y, 
-                   D = data$D,
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees, 
-                   cv.folds = cv.folds,
-                   cf = FALSE,
-                   times = times)
+                      w = data$W, 
+                      y = data$Y, 
+                      D = data$D,
+                      p_hat = ps,
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees, 
+                      cf = FALSE,
+                      train.frac = train.frac,
+                      times = times)
   rgbm_est <- predict(object = rgbm_fit, newx = data.test$X) 
   rgbm_est
 }
 
-estimate_ipcw_wcf_gbm_rlearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times=NULL){
+estimate_ipcw_wcf_gbm_rlearner <- function(data, data.test, nfolds = 10, train.frac = 0.5, 
+                                           shrinkage = 0.01, n.trees = 1000, ps = NULL, times=times){
   rgbm_fit <- rgbm(x = data$X, 
-                   w = data$W, 
-                   y = data$Y, 
-                   D = data$D, 
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees, 
-                   cv.folds = cv.folds,
-                   times = times)
+                      w = data$W, 
+                      y = data$Y, 
+                      D = data$D, 
+                      p_hat = ps,
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,
+                      train.frac = train.frac,
+                      times = times)
   rgbm_est <- predict(object = rgbm_fit, newx = data.test$X) 
   rgbm_est
 }
 
-estimate_ipcw_grf_rlearner <- function(data, data.test, times=NULL){
+estimate_ipcw_grf_rlearner <- function(data, data.test, ps = NULL, times=times){
   rgrf_fit <- rgrf(x = data$X, 
                    w = data$W, 
                    y = data$Y, 
-                   D = data$D, 
+                   D = data$D,
+                   p_hat = ps,
                    times = times)
   rgrf_est <- predict(object = rgrf_fit, data.test$X) 
   rgrf_est
@@ -985,7 +1016,7 @@ estimate_ipcw_grf_rlearner <- function(data, data.test, times=NULL){
 
 
 # "IPCW" F-learner
-estimate_ipcw_wocf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_ipcw_wocf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   foldid <- sample(rep(seq(nfolds), length = length(data$Y)))
@@ -1001,16 +1032,21 @@ estimate_ipcw_wocf_lasso_flearner <- function(data, data.test, nfolds = 10, alph
   cent <- rep(times, length(traindat$Y))
   cent[traindat$D==1] <- traindat$Y[traindat$D==1]
   c_hat <- pred_surv(c_fit, S0, as.matrix(traindat[,3:dim(traindat)[2]]), times = cent, lambda = c_fit$lambda.min)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   ipcw <- 1 / c_hat
   
   # Propensity score
-  w_fit <- cv.glmnet(as.matrix(traindat[,4:dim(traindat)[2]]), 
-                     traindat$W,
-                     foldid = foldid,
-                     alpha = alpha)
-  
-  ps_score <- as.vector(predict(w_fit, newx = as.matrix(traindat[,4:dim(traindat)[2]]), s = w_fit$lambda.min))
-  
+  if (is.null(ps)){
+    w_fit <- cv.glmnet(as.matrix(traindat[,4:dim(traindat)[2]]), 
+                       traindat$W,
+                       foldid = foldid,
+                       alpha = alpha)
+    
+    ps_score <- as.vector(predict(w_fit, as.matrix(traindat[,4:dim(traindat)[2]]), s = w_fit$lambda.min))
+  }else{
+    ps_score <- ps
+  }
+
   # Subset of uncensored subjects
   tempdat <- data.frame(data$Y, data$D, data$W, ps_score, ipcw, data$X)
   colnames(tempdat)[1:3] <- c("Y", "D", "W")
@@ -1018,7 +1054,7 @@ estimate_ipcw_wocf_lasso_flearner <- function(data, data.test, nfolds = 10, alph
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0    
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  flasso_fit <- Flasso(x = as.matrix(binary_data[,6:10]), 
+  flasso_fit <- Flasso(x = as.matrix(binary_data[,6:dim(binary_data)[2]]), 
                        tx = binary_data$W, 
                        y = binary_data$D, 
                        pscore = binary_data$ps_score, 
@@ -1029,7 +1065,7 @@ estimate_ipcw_wocf_lasso_flearner <- function(data, data.test, nfolds = 10, alph
   pred_flasso
 }
 
-estimate_ipcw_wcf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha = 1, times = NULL){
+estimate_ipcw_wcf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha = 1, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   foldid <- sample(rep(seq(nfolds), length = length(data$Y)))
@@ -1047,18 +1083,23 @@ estimate_ipcw_wcf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha
   cent <- rep(times, length(traindat$Y))
   cent[traindat$D==1] <- traindat$Y[traindat$D==1]
   c_hat <- pred_surv_preval(c_fit, S0, times = cent, lambda = c_lambda_min)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   ipcw <- 1 / c_hat
   
   # Propensity score
-  w_fit <- cv.glmnet(as.matrix(traindat[,4:dim(traindat)[2]]), 
-                     traindat$W,
-                     foldid = foldid,
-                     keep = TRUE,
-                     alpha = alpha)
-  
-  w_lambda_min <- w_fit$lambda[which.min(w_fit$cvm[!is.na(colSums(w_fit$fit.preval))])]
-  ps_score <- w_fit$fit.preval[,!is.na(colSums(w_fit$fit.preval))][, w_fit$lambda[!is.na(colSums(w_fit$fit.preval))] == w_lambda_min]
-  
+  if (is.null(ps)){
+    w_fit <- cv.glmnet(as.matrix(traindat[,4:dim(traindat)[2]]), 
+                       traindat$W,
+                       foldid = foldid,
+                       keep = TRUE,
+                       alpha = alpha)
+    
+    w_lambda_min <- w_fit$lambda[which.min(w_fit$cvm[!is.na(colSums(w_fit$fit.preval))])]
+    ps_score <- w_fit$fit.preval[,!is.na(colSums(w_fit$fit.preval))][, w_fit$lambda[!is.na(colSums(w_fit$fit.preval))] == w_lambda_min]
+  }else{
+    ps_score <- ps
+  }
+    
   # Subset of uncensored subjects
   tempdat <- data.frame(data$Y, data$D, data$W, ps_score, ipcw, data$X)
   colnames(tempdat)[1:3] <- c("Y", "D", "W")
@@ -1066,7 +1107,7 @@ estimate_ipcw_wcf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0    
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  flasso_fit <- Flasso(x = as.matrix(binary_data[,6:10]), 
+  flasso_fit <- Flasso(x = as.matrix(binary_data[,6:dim(binary_data)[2]]), 
                        tx = binary_data$W, 
                        y = binary_data$D, 
                        pscore = binary_data$ps_score, 
@@ -1077,41 +1118,43 @@ estimate_ipcw_wcf_lasso_flearner <- function(data, data.test, nfolds = 10, alpha
   pred_flasso
 }
 
-estimate_ipcw_wocf_gbm_flearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_ipcw_wocf_gbm_flearner <- function(data, data.test, nfolds = 10, train.frac = 0.5, 
+                                            shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
   
   # IPCW weights
-  gbmfit <- gbm(Surv(Y, 1-D)~., 
-                data = traindat, 
-                distribution = "coxph",
-                shrinkage = shrinkage, 
-                n.trees = n.trees, 
-                cv.folds = cv.folds, 
-                n.cores = detectCores()) 
-  best_iter <- gbm.perf(gbmfit, plot.it = F, method = 'cv')
+  gbmfit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                    Surv(traindat$Y, 1 - traindat$D), 
+                    distribution = "coxph",
+                    shrinkage = shrinkage, 
+                    n.trees = n.trees, 
+                    nTrain = ceiling(dim(traindat)[1] * train.frac),
+                    verbose = FALSE) 
+  best_iter <- gbm.perf(gbmfit, plot.it = F, method = 'test')
   pred.train <- predict(gbmfit, traindat, n.trees = best_iter)
   cent <- data$Y
   cent[data$D==0] <- times
-  basehaz.cum <- rep(NA, length(cent))
-  for (k in 1:length(cent)){
-    basehaz.cum[k] <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent[k], cumulative = TRUE)
-  }
+  basehaz.cum <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent, cumulative = TRUE)
   c_hat <- exp(-exp(pred.train)*basehaz.cum)
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   ipcw <- 1 / c_hat
   
   # Propensity score 
-  tmpdat <- traindat[, 3:dim(traindat)[2]]
-  w_fit <- gbm(W ~ ., 
-               data = tmpdat, 
-               distribution = "bernoulli",
-               shrinkage = shrinkage, 
-               n.trees = n.trees, 
-               cv.folds = cv.folds, 
-               n.cores = detectCores()) 
-  best_iter <- gbm.perf(w_fit, plot.it = F, method = 'cv')
-  log_odds <- predict(w_fit, tmpdat, n.trees = best_iter)
-  ps_score <- 1/(1 + exp(-log_odds))
+  if (is.null(ps)){
+    w_fit <- gbm.fit(traindat[, 4:dim(traindat)[2]], 
+                     traindat$W, 
+                     distribution = "bernoulli",
+                     shrinkage = shrinkage, 
+                     n.trees = n.trees, 
+                     nTrain = ceiling(dim(traindat)[1] * train.frac),
+                     verbose = FALSE) 
+    best_iter <- gbm.perf(w_fit, plot.it = F, method = 'test')
+    log_odds <- predict(w_fit, traindat[, 4:dim(traindat)[2]], n.trees = best_iter)
+    ps_score <- 1/(1 + exp(-log_odds))
+  }else{
+    ps_score <- ps
+  }
   
   # Subset of uncensored subjects
   tempdat <- data.frame(data$Y, data$D, data$W, ipcw, ps_score, data$X)
@@ -1120,19 +1163,20 @@ estimate_ipcw_wocf_gbm_flearner <- function(data, data.test, nfolds = 10, cv.fol
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
                   
-  fgbm_fit <- Fgbm(x = as.matrix(binary_data[,6:10]), 
-                   tx = binary_data$W, 
-                   y = binary_data$D, 
-                   pscore = binary_data$ps_score, 
-                   weight = binary_data$ipcw,
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees, 
-                   cv.folds = cv.folds)
+  fgbm_fit <- Fgbm(x = binary_data[,6:dim(binary_data)[2]], 
+                      tx = binary_data$W, 
+                      y = binary_data$D, 
+                      pscore = binary_data$ps_score, 
+                      weight = binary_data$ipcw,
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,
+                      train.frac = train.frac)
   pred_fgbm <- -predict(fgbm_fit, newx = data.frame(data.test$X))
   pred_fgbm
 }
 
-estimate_ipcw_wcf_gbm_flearner <- function(data, data.test, nfolds = 10, cv.folds = 5, shrinkage = 0.005, n.trees = 2000, times = NULL){
+estimate_ipcw_wcf_gbm_flearner <- function(data, data.test, nfolds = 10, train.frac = 0.5, 
+                                           shrinkage = 0.01, n.trees = 1000, ps = NULL, times = times){
   tempdat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(tempdat)[1:3] <- c("Y", "D", "W")
   foldid <- sample(rep(seq(nfolds), length = length(tempdat$Y)))
@@ -1142,43 +1186,46 @@ estimate_ipcw_wcf_gbm_flearner <- function(data, data.test, nfolds = 10, cv.fold
   for (k in 1:nfolds){
     testdat <- tempdat[foldid==k, ]
     traindat <- tempdat[!foldid==k, ]
-    c_fit <- gbm(Surv(Y, 1-D)~.,
-                 data = traindat, 
-                 distribution = "coxph",
-                 shrinkage = shrinkage, 
-                 n.trees = n.trees, 
-                 cv.folds = cv.folds) 
-    best_iter <- gbm.perf(c_fit, plot.it = F, method = 'cv')
+    c_fit <- gbm.fit(traindat[, 3:dim(traindat)[2]],
+                     Surv(traindat$Y, 1 - traindat$D),  
+                     distribution = "coxph",
+                     shrinkage = shrinkage, 
+                     n.trees = n.trees, 
+                     nTrain = ceiling(dim(traindat)[1] * train.frac),
+                     verbose = FALSE) 
+    best_iter <- gbm.perf(c_fit, plot.it = F, method = 'test')
     pred.train <- predict(c_fit, traindat, n.trees = best_iter)
     cent <- testdat$Y
     cent[testdat$D==0] <- times
-    basehaz.cum <- rep(NA, length(cent))
-    for (z in 1:length(cent)){
-      basehaz.cum[z] <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent[z], cumulative = TRUE)
-    }
+    basehaz.cum <- basehaz.gbm(traindat$Y, 1-traindat$D, pred.train, t.eval = cent, cumulative = TRUE)
     pred.test <- predict(c_fit, testdat, n.trees = best_iter)
     c_hat[foldid==k] <- exp(-exp(pred.test)*basehaz.cum)
   }
+  c_hat[c_hat==0] <- min(c_hat[c_hat!=0])
   ipcw <- 1 / c_hat
 
   # Propensity score 
-  ps_score <- rep(NA, length(tempdat$W))
-  for (k in 1:nfolds){
-    testdat <- tempdat[foldid==k, ]
-    traindat <- tempdat[!foldid==k, ]
-    w_dat <- traindat[, 3:dim(traindat)[2]]
-    w_fit <- gbm(W ~ ., 
-                 data = w_dat, 
-                 distribution = "bernoulli",
-                 shrinkage = shrinkage, 
-                 n.trees = n.trees, 
-                 cv.folds = cv.folds, 
-                 n.cores = detectCores()) 
-    best_iter <- gbm.perf(w_fit, plot.it = F, method = 'cv')
-    log_odds <- predict(w_fit, testdat[, 4:dim(testdat)[2]], n.trees = best_iter)
-    ps_score[foldid==k] <- 1/(1 + exp(-log_odds))
+  if (is.null(ps)){
+    ps_score <- rep(NA, length(tempdat$W))
+    for (k in 1:nfolds){
+      testdat <- tempdat[foldid==k, ]
+      traindat <- tempdat[!foldid==k, ]
+      w_dat <- traindat[, 3:dim(traindat)[2]]
+      w_fit <- gbm.fit(traindat[, 4:dim(traindat)[2]], 
+                       traindat$W,
+                       distribution = "bernoulli",
+                       shrinkage = shrinkage, 
+                       n.trees = n.trees, 
+                       nTrain = ceiling(dim(traindat)[1] * train.frac),
+                       verbose = FALSE) 
+      best_iter <- gbm.perf(w_fit, plot.it = F, method = 'test')
+      log_odds <- predict(w_fit, testdat[, 4:dim(testdat)[2]], n.trees = best_iter)
+      ps_score[foldid==k] <- 1/(1 + exp(-log_odds))
+    }
+  }else{
+    ps_score <- ps
   }
-
+  
   # Subset of uncensored subjects
   tmpdat <- data.frame(data$Y, data$D, data$W, ipcw, ps_score, data$X)
   colnames(tmpdat)[1:3] <- c("Y", "D", "W")
@@ -1186,42 +1233,45 @@ estimate_ipcw_wcf_gbm_flearner <- function(data, data.test, nfolds = 10, cv.fold
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  fgbm_fit <- Fgbm(x = as.matrix(binary_data[,6:10]), 
-                   tx = binary_data$W, 
-                   y = binary_data$D, 
-                   pscore = binary_data$ps_score, 
-                   weight = binary_data$ipcw,
-                   shrinkage = shrinkage, 
-                   n.trees = n.trees, 
-                   cv.folds = cv.folds)
+  fgbm_fit <- Fgbm(x = as.matrix(binary_data[,6:dim(binary_data)[2]]), 
+                      tx = binary_data$W, 
+                      y = binary_data$D, 
+                      pscore = binary_data$ps_score, 
+                      weight = binary_data$ipcw,
+                      shrinkage = shrinkage, 
+                      n.trees = n.trees,
+                      train.frac = train.frac)
   pred_fgbm <- -predict(fgbm_fit, data.frame(data.test$X))
   pred_fgbm
 }
 
-estimate_ipcw_grf_flearner <- function(data, data.test, times = NULL){
+estimate_ipcw_grf_flearner <- function(data, data.test, ps = NULL, times = times){
   traindat <- data.frame(data$Y, data$D, data$W, data$X)
   colnames(traindat)[1:3] <- c("Y", "D", "W")
+  
+  Y.grid <- sort(unique(data$Y))
   
   # IPCW weights
   sf.censor <- survival_forest(as.matrix(traindat[,3:dim(traindat)[2]]),
                                data$Y,
                                1 - data$D,
                                prediction.type = "Nelson-Aalen")
-  C.hat <- sf.censor$predictions
+  C.hat <- predict(sf.censor, failure.times = Y.grid)$predictions
   cent <- data$Y
   cent[data$D==0] <- times
-  C.index <- rep(NA, length(cent))
-  for (h in 1:length(cent)){
-    C.index[h] <- which.min(abs(sort(unique(data$Y[data$D==0]))-cent[h]))
-  }
-  C.Y.hat <- C.hat[cbind(1:length(data$Y), C.index)]
+  cen.times.index <- findInterval(cent, Y.grid)
+  C.Y.hat <- C.hat[cbind(1:length(data$Y), cen.times.index)]
+  C.Y.hat[C.Y.hat==0] <- min(C.Y.hat[C.Y.hat!=0])
   ipcw <- 1 / C.Y.hat
   
-  # Propensity score 
-  psfit <- regression_forest(as.matrix(traindat[,4:dim(traindat)[2]]), 
-                             traindat$W, 
-                             tune.parameters = "all") 
-  ps <- psfit$predictions
+  # Propensity score
+  if (is.null(ps)){
+    psfit <- regression_forest(as.matrix(traindat[,4:dim(traindat)[2]]), 
+                               traindat$W, 
+                               tune.parameters = "all") 
+    ps <- psfit$predictions
+  }
+  
   
   # Subset of uncensored subjects
   tempdat <- data.frame(data$Y, data$D, data$W, ps, ipcw, data$X)
@@ -1230,13 +1280,28 @@ estimate_ipcw_grf_flearner <- function(data, data.test, times = NULL){
   binary_data$D[binary_data$D==1 & binary_data$Y > times] <- 0     
   binary_data <- binary_data[complete.cases(binary_data), ]
   
-  fgrf_fit <- Fgrf(x = as.matrix(binary_data[,6:10]), 
+  fgrf_fit <- Fgrf(x = as.matrix(binary_data[,6:dim(binary_data)[2]]), 
                    tx = binary_data$W, 
                    y = binary_data$D, 
                    pscore = binary_data$ps, 
                    weight = binary_data$ipcw)
   pred_fgrf <- -predict(fgrf_fit, data.test$X)
   pred_fgrf
+}
+
+
+# Causal survival forest 
+estimate_csf_probs <- function(data, data.test, ps = NULL, times = times) {
+  fit <- causal_survival_forest(X = data$X,
+                                Y = data$Y,
+                                W = data$W,
+                                D = data$D,
+                                failure.times = seq(min(data$Y), max(data$Y), (max(data$Y) - min(data$Y))/100), 
+                                W.hat = ps,
+                                target="survival.probability",
+                                Y.max = times)
+  p <- predict(fit, data.test$X)
+  p$predictions
 }
 
 

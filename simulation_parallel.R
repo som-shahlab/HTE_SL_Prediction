@@ -1,27 +1,31 @@
 rm(list = ls())
-library(parallel)
+library(survival)
 library(grf)
 library(randomForestSRC)
 library(survival)
 library(gbm)
 library(glmnet)
-#library(bcf)
-setwd("C:/Users/cryst/Documents/Stanford Postdoc/NHLBI R01 Aim 2/Analyses Stanford Team")
+setwd("C:/Users/cryst/Documents/Stanford Postdoc/NHLBI R01 Aim 2/risk-vs-hte-R")
+source("sprint_parametric_simulation.R")
+
+setwd("C:/Users/cryst/Documents/Stanford Postdoc/NHLBI R01 Aim 2/Analyses Stanford Team/HTE_experiments")
 source("./dgps.R")
 source("./comparison_estimators.R")
-set.seed(123)
+source("./flearner_surv/Flasso.R")
+source("./flearner_surv/Fgbm.R")
+source("./flearner_surv/Fgrf.R")
+source("./rlearner_surv/utils.R")
+source("./rlearner_surv/scoxph.R")
+source("./rlearner_surv/slasso_surv.R")
+source("./rlearner_surv/rlasso.R")
+source("./rlearner_surv/rgbm.R")
+source("./rlearner_surv/rgrf.R")
 
-# source("./R/dgps.R")
-# source("./R/utils.R")
-# source("./R/scoxph.R")
-# source("./R/slasso_surv.R")
-# source("./R/Flasso.R")
-# source("./R/Fgbm.R")
-# source("./R/Fgrf.R")
-# source("./R/rlasso.R")
-# source("./R/rgbm.R")
-# source("./R/rgrf.R")
-# source("./R/comparison_estimators.R")
+source("./grf-csf-prob/r-package/grf/R/causal_survival_forest.R")
+source("./grf-csf-prob/r-package/grf/R/input_utilities.R")
+source("./grf-csf-prob/r-package/grf/R/RcppExports.R")
+
+set.seed(123)
 
 
 # *** Comparison methods ***
@@ -56,18 +60,23 @@ estimators = list(estimate_coxph_slearner = estimate_coxph_slearner,
                   estimate_grf_tlearner = estimate_grf_tlearner,
                   estimate_ipcw_grf_xlearner = estimate_ipcw_grf_xlearner,
                   estimate_ipcw_grf_flearner = estimate_ipcw_grf_flearner,
-                  estimate_ipcw_grf_rlearner = estimate_ipcw_grf_rlearner)
+                  estimate_ipcw_grf_rlearner = estimate_ipcw_grf_rlearner,
+                  
+                  estimate_csf_probs = estimate_csf_probs)
 
-
+estimators = list(estimate_csf_probs = estimate_csf_probs)
 # *** Setup ***
 out = list()
-n.sim = 3 # 200
+n.sim = 200 # 200
 n.mc = 100000
-grid = expand.grid(n = 500, # c(500, 1000, 2000, 5000)
+grid = expand.grid(n = c(2000, 5000),
                    p = 5,
-                   n.test = 500, # 2000
-                   dgp = "type1", # c("type1", "type2", "type3", "type4"), 
+                   n.test = 2000,
+                   dgp = c("type1", "type2", "type3", "type4", "type5", "type6", "type7"), 
                    stringsAsFactors = FALSE)
+grid <- grid[c(1:11,13),]
+grid[11:12,1] <- rep(9000, 2)  # use N=9000 for SPRINT dgps
+i=12
 
 for (i in 1:nrow(grid)) {
   print(paste("grid", i))
@@ -79,7 +88,12 @@ for (i in 1:nrow(grid)) {
   for (sim in 1:n.sim) {
     print(paste("sim", sim))
     data = generate_causal_survival_data(n = n, p = p, dgp = dgp, n.mc = 10)
-    data.test = generate_causal_survival_data(n = n.test, p = p, dgp = dgp, n.mc = n.mc)
+    if (dgp == "type6" | dgp == "type7"){
+      data.test = generate_causal_survival_data(n = n.test, p = p, dgp = dgp, n.mc = 10)
+    }else{
+      data.test = generate_causal_survival_data(n = n.test, p = p, dgp = dgp, n.mc = n.mc)
+    }
+    data$Y = pmax(rep(0.001, length(data$Y)), data$Y)
     true.cate = data.test$cate
     true.cate.sign = data.test$cate.sign
     true.catesp = data.test$catesp
@@ -88,11 +102,17 @@ for (i in 1:nrow(grid)) {
     for (j in 1:length(estimators)) {
       estimator.name = names(estimators)[j]
       print(estimator.name)
-      predictions = as.numeric(unlist(estimators[[estimator.name]](data, data.test, times = median(data$Y))))
-      correct.classification = sign(predictions) == true.cate.sign
+      if (dgp == "type5"){
+        predictions = as.numeric(unlist(estimators[[estimator.name]](data, data.test, ps = mean(as.numeric(data$W)), times = median(data$Y))))
+      }else if (dgp == "type6"|dgp == "type7"){
+        predictions = as.numeric(unlist(estimators[[estimator.name]](data, data.test, times = 365.25*3)))
+      }else{
+        predictions = as.numeric(unlist(estimators[[estimator.name]](data, data.test, times = median(data$Y))))
+      }
+      correct.classification = sign(predictions) == true.catesp.sign
       dfj = data.frame(
         estimator.name = estimator.name,
-        mse = mean((predictions - true.cate)^2),
+        mse = mean((predictions - true.catesp)^2),
         classif.rate = mean(correct.classification, na.rm = TRUE) # NA: to ignore X1 < 0.3 in DGP 4.
         )
       estimator.output[[j]] = dfj

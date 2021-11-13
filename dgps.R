@@ -238,17 +238,17 @@ generate_causal_data <- function(n, p, sigma.m = 1, sigma.tau = 0.1, sigma.noise
 #'
 #' @export
 generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 10000, 
-                                          dgp = c("simple1", "type1", "type2", "type3", "type4", "type5")) {
-  .minp <- c(simple1 = 1, type1 = 5, type2 = 5, type3 = 5, type4 = 5, type5 = 5)
+                                          dgp = c("simple1", "type1", "type2", "type3", "type4", "type5", "type6", "type7")) {
+  .minp <- c(simple1 = 1, type1 = 5, type2 = 5, type3 = 5, type4 = 5, type5 = 5, type6 = 6, type7 = 7)
   dgp <- match.arg(dgp)
   minp <- .minp[dgp]
   if (!is.null(X)) {
     p <- NCOL(X)
     n <- NROW(X)
   }
-  if (p < minp) {
-    stop(paste("Selected dgp", dgp, "requires a minimum of", minp, "variables."))
-  }
+  # if (p < minp) {
+  #   stop(paste("Selected dgp", dgp, "requires a minimum of", minp, "variables."))
+  # }
 
   if (dgp == "simple1") {
     if (is.null(Y.max)) {
@@ -270,7 +270,7 @@ generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 1
     cate.sign = rep(1, n)
   } else if (dgp == "type1") {
     # Type 1 from https://arxiv.org/abs/2001.09887 (Cox PH censor time)
-    
+  
     if (is.null(Y.max)) {
       Y.max <- 1.5
     }
@@ -291,7 +291,6 @@ generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 1
     cate <- rep(NA, n)
     catesp <- rep(NA, n)
     eps <- rnorm(n.mc)
-    S1 <- S0 <- rep(NA,n)
     for (i in 1:n) {
       ft0 <- exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] + eps)
       ft1 <- exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] +
@@ -388,32 +387,100 @@ generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 1
     # For X1 < 0.3 the cate is zero so both (0, 1) are optimal, and we can ignore this subset.
     cate.sign[X[, 1] < 0.3] <- NA
   } else if (dgp == "type5") {
-    # Similar to "type2" but censoring generated from an accelerated failure time model.
+    # Similar to "Type 1" but 1) randomized treatment, 2) low event rate = 5%, 
+    # and 3) no treatment effect heterogeneity on the relative risk scale & ATE > 0
     if (is.null(Y.max)) {
-      Y.max <- 2
+      Y.max <- 2.5
     }
     if (is.null(X)) {
       X <- matrix(runif(n * p), n, p)
     }
-    e <- (1 + dbeta(X[, 1], 2, 4)) / 4
-    W <- rbinom(n, 1, e)
+    e <- 0.5
+    W <- rbinom(n, 1, 0.5)
+    I1 <- X[,1] < 0.5
+    #ft <- 4 * exp(-1.85 - 0.8 * I1 + 0.7 * sqrt(X[, 2]) + 0.2 * X[, 3] + 0.7 * W + rnorm(n)) # no HTE on RR scale 
+    ft <- 4 * exp(-1.85 - 0.8 * I1 + 0.7 * sqrt(X[, 2]) + 0.2 * X[, 3]  + rnorm(n)) # ATE = 0 
+    failure.time <- pmin(ft, Y.max)
     numerator <- -log(runif(n))
-    cox.ft <- (numerator / exp(X[,1] + (-0.4 + X[,2]) * W))^2
-    failure.time <- pmin(cox.ft, Y.max)
-    censor.time <- exp(X[1, ] - X[, 3] * W + rnorm(n))
+    #denominator <- 6 * exp(0.5 - 0.5 * sqrt(X[, 2]) + 0.2 * X[, 3]  - 0.7 * W)
+    denominator <- 6 * exp(0.5 - 0.5 * sqrt(X[, 2]) + 0.2 * X[, 3])
+    censor.time <- numerator / denominator
     Y <- pmin(failure.time, censor.time)
-    D <- as.integer(failure.time <= censor.time)
+    D <- as.integer(failure.time <= censor.time)#; table(D); table(D[W==1])
     cate <- rep(NA, n)
     catesp <- rep(NA, n)
-    numerator <- -log(runif(n.mc))
+    eps <- rnorm(n.mc)
     for (i in 1:n) {
-      cox.ft0 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 0))^2
-      cox.ft1 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 1))^2
-      cate[i] <- mean(pmin(cox.ft1, Y.max) - pmin(cox.ft0, Y.max))
-      catesp[i] <- mean((pmin(cox.ft1, Y.max) > median(Y)) - (pmin(cox.ft0, Y.max) > median(Y)))
-    }
-    cate.sign <- -sign(-0.4 + X[,2]) # Note: negative b/c of Cox model, larger is worse.
+      ft0 <- 4 * exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] + eps)
+      #ft1 <- 4 * exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] + 0.7 + eps)
+      ft1 <- 4 * exp(-1.85 - 0.8 * I1[i] + 0.7 * sqrt(X[i, 2]) + 0.2 * X[i, 3] + eps)
+      cate[i] <- mean(pmin(ft1, Y.max) - pmin(ft0, Y.max))
+      catesp[i] <- mean((pmin(ft1, Y.max) > median(Y)) - (pmin(ft0, Y.max) > median(Y)))
+    } 
+    cate.sign <- sign(cate)
     catesp.sign <- sign(catesp)
+    
+    
+  #   # Similar to "type2" but censoring generated from an accelerated failure time model.
+  #   if (is.null(Y.max)) {
+  #     Y.max <- 2
+  #   }
+  #   if (is.null(X)) {
+  #     X <- matrix(runif(n * p), n, p)
+  #   }
+  #   e <- (1 + dbeta(X[, 1], 2, 4)) / 4
+  #   W <- rbinom(n, 1, e)
+  #   numerator <- -log(runif(n))
+  #   cox.ft <- (numerator / exp(X[,1] + (-0.4 + X[,2]) * W))^2
+  #   failure.time <- pmin(cox.ft, Y.max)
+  #   censor.time <- exp(X[1, ] - X[, 3] * W + rnorm(n))
+  #   Y <- pmin(failure.time, censor.time)
+  #   D <- as.integer(failure.time <= censor.time)
+  #   cate <- rep(NA, n)
+  #   catesp <- rep(NA, n)
+  #   numerator <- -log(runif(n.mc))
+  #   for (i in 1:n) {
+  #     cox.ft0 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 0))^2
+  #     cox.ft1 <- (numerator / exp(X[i, 1] + (-0.4 + X[i, 2]) * 1))^2
+  #     cate[i] <- mean(pmin(cox.ft1, Y.max) - pmin(cox.ft0, Y.max))
+  #     catesp[i] <- mean((pmin(cox.ft1, Y.max) > median(Y)) - (pmin(cox.ft0, Y.max) > median(Y)))
+  #   }
+  #   cate.sign <- -sign(-0.4 + X[,2]) # Note: negative b/c of Cox model, larger is worse.
+  #   catesp.sign <- sign(catesp)
+  }else if (dgp == "type6") {
+    # sprint simulator by Scotty
+    results_dict <- simulate_parametric_SPRINT_data(n = n,
+                                                    e = 0.5,
+                                                    fixed_treatment_effect_strength = 0, # reflect HR = 1 
+                                                    variable_treatment_effect_type = 'ascvd_correlated',
+                                                    variable_treatment_effect_strength = 0,
+                                                    event_rate_multiplier = 1.0)
+    X <- as.matrix(results_dict$X)
+    Y <- results_dict$Y
+    W <- results_dict$W
+    D <- results_dict$D
+    Y.max <- NULL  
+    catesp <- results_dict$tau_sc_diff
+    catesp.sign <- sign(catesp)
+    cate <- NULL
+    cate.sign <- NULL
+  }else if (dgp == "type7") {
+    # sprint simulator by Scotty
+    results_dict <- simulate_parametric_SPRINT_data(n = n,
+                                                    e = 0.5,
+                                                    fixed_treatment_effect_strength = -0.3, # reflect HR = 0.75 in SPRINT (NEJM 2015)
+                                                    variable_treatment_effect_type = 'ascvd_correlated',
+                                                    variable_treatment_effect_strength = 0,
+                                                    event_rate_multiplier = 1.0)
+    X <- as.matrix(results_dict$X)
+    Y <- results_dict$Y
+    W <- results_dict$W
+    D <- results_dict$D
+    Y.max <- NULL  
+    catesp <- results_dict$tau_sc_diff
+    catesp.sign <- sign(catesp)
+    cate <- NULL
+    cate.sign <- NULL
   }
 
   list(X = X, Y = Y, W = W, D = D, cate = cate, cate.sign = cate.sign, catesp = catesp, catesp.sign = catesp.sign, dgp = dgp, Y.max = Y.max)
