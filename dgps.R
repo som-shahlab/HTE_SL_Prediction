@@ -454,7 +454,8 @@ generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 1
                                                     fixed_treatment_effect_strength = 0, # reflect HR = 1 
                                                     variable_treatment_effect_type = 'ascvd_correlated',
                                                     variable_treatment_effect_strength = 0,
-                                                    event_rate_multiplier = 1.0)
+                                                    event_rate_multiplier = 1.0, 
+                                                    end_time=365.25*3)
     X <- as.matrix(results_dict$X)
     Y <- results_dict$Y
     W <- results_dict$W
@@ -471,7 +472,8 @@ generate_causal_survival_data <- function(n, p, Y.max = NULL, X = NULL, n.mc = 1
                                                     fixed_treatment_effect_strength = -0.3, # reflect HR = 0.75 in SPRINT (NEJM 2015)
                                                     variable_treatment_effect_type = 'ascvd_correlated',
                                                     variable_treatment_effect_strength = 0,
-                                                    event_rate_multiplier = 1.0)
+                                                    event_rate_multiplier = 1.0,
+                                                    end_time=365.25*3)
     X <- as.matrix(results_dict$X)
     Y <- results_dict$Y
     W <- results_dict$W
